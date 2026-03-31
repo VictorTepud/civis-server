@@ -29,7 +29,12 @@ router.post('/register', (req, res) => {
 
     const token = jwt.sign({ id, email }, JWT_SECRET, { expiresIn: '7d' });
 
-    const user = db.prepare('SELECT id, email, name, phone, avatar, bio, online, last_seen, created_at FROM users WHERE id = ?').get(id);
+    const user = db.prepare(`
+      SELECT id, email, name, phone, avatar, bio,
+             CASE WHEN online = 1 THEN 1 ELSE 0 END as online,
+             last_seen, created_at
+      FROM users WHERE id = ?
+    `).get(id);
 
     res.status(201).json({ user, token });
   } catch (err) {
@@ -59,7 +64,14 @@ router.post('/login', (req, res) => {
     const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
     // Solo campos seguros, excluir password y privacy_settings
-    const safeUser = db.prepare('SELECT id, email, name, phone, avatar, bio, online, last_seen, created_at FROM users WHERE id = ?').get(user.id);
+    // CASE convierte 0/1 a true/false para Gson
+    const safeUser = db.prepare(`
+      SELECT id, email, name, phone, avatar, bio,
+             CASE WHEN online = 1 THEN 1 ELSE 0 END as online,
+             last_seen, created_at
+      FROM users WHERE id = ?
+    `).get(user.id);
+    safeUser.online = !!safeUser.online;
 
     res.json({ user: safeUser, token });
   } catch (err) {
@@ -75,10 +87,16 @@ router.post('/logout', (req, res) => {
 // GET /verify-token
 router.get('/verify-token', authenticate, (req, res) => {
   try {
-    const user = db.prepare('SELECT id, email, name, phone, avatar, bio, online, last_seen, created_at FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare(`
+      SELECT id, email, name, phone, avatar, bio,
+             CASE WHEN online = 1 THEN 1 ELSE 0 END as online,
+             last_seen, created_at
+      FROM users WHERE id = ?
+    `).get(req.user.id);
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
+    user.online = !!user.online;
     res.json({ user });
   } catch (err) {
     res.status(500).json({ error: err.message });
