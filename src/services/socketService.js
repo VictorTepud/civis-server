@@ -101,7 +101,9 @@ function setupSocket(io) {
         .run(content || '[Media]', conversation.id);
 
       const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
-      io.emit(`message_${receiver_id}`, message);
+      const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(userId);
+      const messageWithSender = { ...message, sender };
+      io.emit(`message_${receiver_id}`, messageWithSender);
     });
 
     // On group_message

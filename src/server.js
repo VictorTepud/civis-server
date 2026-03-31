@@ -37,6 +37,11 @@ setupSocket(io);
 app.use(cors());
 app.use(express.json());
 
+// Format middleware: camelCase ↔ snake_case conversion
+const { requestFormatMiddleware, responseFormatMiddleware } = require('./middlewares/formatMiddleware');
+app.use(requestFormatMiddleware);
+app.use(responseFormatMiddleware);
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
@@ -54,7 +59,7 @@ app.use('/uploads', express.static(path.join(__dirname, '..', '..', 'uploads')))
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Civis server running on port ${PORT}`);
 });
 

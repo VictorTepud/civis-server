@@ -19,7 +19,7 @@ function getIo() {
 router.get('/conversations', authenticate, (req, res) => {
   try {
     const conversations = db.prepare(`
-      SELECT cp.conversation_id, c.type, c.name, c.avatar, c.last_message, c.last_message_time,
+      SELECT cp.conversation_id as id, c.type, c.name, c.avatar, c.last_message, c.last_message_time,
              (SELECT COUNT(*) FROM messages m
               WHERE m.conversation_id = cp.conversation_id
               AND m.sender_id != cp.user_id AND m.read = 0 AND m.deleted = 0) as unread_count
@@ -36,7 +36,7 @@ router.get('/conversations', authenticate, (req, res) => {
           FROM conversation_participants cp
           JOIN users u ON cp.user_id = u.id
           WHERE cp.conversation_id = ? AND cp.user_id != ?
-        `).get(conv.conversation_id, req.user.id);
+        `).get(conv.id, req.user.id);
         return { ...conv, other_user: otherParticipant };
       }
       return conv;
@@ -84,14 +84,16 @@ router.post('/send', authenticate, (req, res) => {
       .run(content || '[Media]', conversation.id);
 
     const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(req.user.id);
+    const messageWithSender = { ...message, sender };
 
     // Emit via socket
     const socketIo = getIo();
     if (socketIo) {
-      socketIo.emit(`message_${receiver_id}`, message);
+      socketIo.emit(`message_${receiver_id}`, messageWithSender);
     }
 
-    res.status(201).json({ message });
+    res.status(201).json({ message: messageWithSender });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -106,11 +108,17 @@ router.get('/:conversationId', authenticate, (req, res) => {
     const messages = db.prepare(`
       SELECT m.* FROM messages m
       WHERE m.conversation_id = ? AND m.deleted = 0
-      ORDER BY m.created_at DESC
+      ORDER BY m.created_at ASC
       LIMIT ? OFFSET ?
     `).all(req.params.conversationId, limit, offset);
 
-    res.json({ messages });
+    // Add sender info to each message
+    const messagesWithSender = messages.map(msg => {
+      const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(msg.sender_id);
+      return { ...msg, sender };
+    });
+
+    res.json({ messages: messagesWithSender });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
