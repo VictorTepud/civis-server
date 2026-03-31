@@ -37,10 +37,23 @@ setupSocket(io);
 app.use(cors());
 app.use(express.json());
 
-// Format middleware: camelCase ↔ snake_case conversion
-const { requestFormatMiddleware, responseFormatMiddleware } = require('./middlewares/formatMiddleware');
-app.use(requestFormatMiddleware);
-app.use(responseFormatMiddleware);
+// Simple response wrapper: envuelve respuestas en { success: true, data: ... }
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = function (data) {
+    // Si ya tiene success, no envolver de nuevo
+    if (data && typeof data === 'object' && 'success' in data) {
+      return originalJson(data);
+    }
+    // Errores (status >= 400) pasan tal cual
+    if (res.statusCode >= 400) {
+      return originalJson(data);
+    }
+    // Envolver en formato estándar
+    return originalJson({ success: true, data: data });
+  };
+  next();
+});
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));

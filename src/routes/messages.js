@@ -15,7 +15,21 @@ function getIo() {
   return io;
 }
 
-// GET /conversations - list conversations
+// Convierte 0/1 a true/false para campos booleanos de SQLite
+function fixBooleans(obj) {
+  const result = { ...obj };
+  if (result.read !== undefined) result.read = result.read === 1 || result.read === true;
+  if (result.deleted !== undefined) result.deleted = result.deleted === 1 || result.deleted === true;
+  if (result.forwarded !== undefined) result.forwarded = result.forwarded === 1 || result.forwarded === true;
+  if (result.online !== undefined) result.online = result.online === 1 || result.online === true;
+  if (result.muted !== undefined) result.muted = result.muted === 1 || result.muted === true;
+  if (result.blocked !== undefined) result.blocked = result.blocked === 1 || result.blocked === true;
+  if (result.only_admins_can_send !== undefined) result.only_admins_can_send = result.only_admins_can_send === 1;
+  if (result.only_admins_can_edit !== undefined) result.only_admins_can_edit = result.only_admins_can_edit === 1;
+  return result;
+}
+
+// GET /conversations
 router.get('/conversations', authenticate, (req, res) => {
   try {
     const conversations = db.prepare(`
@@ -30,25 +44,26 @@ router.get('/conversations', authenticate, (req, res) => {
     `).all(req.user.id);
 
     const result = conversations.map(conv => {
-      if (conv.type === 'private') {
+      const fixed = fixBooleans(conv);
+      if (fixed.type === 'private') {
         const otherParticipant = db.prepare(`
           SELECT u.id, u.name, u.avatar, u.online, u.last_seen
           FROM conversation_participants cp
           JOIN users u ON cp.user_id = u.id
           WHERE cp.conversation_id = ? AND cp.user_id != ?
-        `).get(conv.id, req.user.id);
-        return { ...conv, other_user: otherParticipant };
+        `).get(fixed.id, req.user.id);
+        fixed.other_user = otherParticipant ? fixBooleans(otherParticipant) : null;
       }
-      return conv;
+      return fixed;
     });
 
-    res.json({ conversations: result });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /send - send message
+// POST /send
 router.post('/send', authenticate, (req, res) => {
   try {
     const { receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded } = req.body;
@@ -85,7 +100,7 @@ router.post('/send', authenticate, (req, res) => {
 
     const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
     const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(req.user.id);
-    const messageWithSender = { ...message, sender };
+    const messageWithSender = fixBooleans({ ...message, sender });
 
     // Emit via socket
     const socketIo = getIo();
@@ -93,13 +108,13 @@ router.post('/send', authenticate, (req, res) => {
       socketIo.emit(`message_${receiver_id}`, messageWithSender);
     }
 
-    res.status(201).json({ message: messageWithSender });
+    res.status(201).json(messageWithSender);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /:conversationId - get messages
+// GET /:conversationId
 router.get('/:conversationId', authenticate, (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -112,19 +127,18 @@ router.get('/:conversationId', authenticate, (req, res) => {
       LIMIT ? OFFSET ?
     `).all(req.params.conversationId, limit, offset);
 
-    // Add sender info to each message
     const messagesWithSender = messages.map(msg => {
       const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(msg.sender_id);
-      return { ...msg, sender };
+      return fixBooleans({ ...msg, sender });
     });
 
-    res.json({ messages: messagesWithSender });
+    res.json(messagesWithSender);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /:messageId/read - mark as read
+// PUT /:messageId/read
 router.put('/:messageId/read', authenticate, (req, res) => {
   try {
     db.prepare('UPDATE messages SET read = 1 WHERE id = ? AND receiver_id = ?')
@@ -133,7 +147,7 @@ router.put('/:messageId/read', authenticate, (req, res) => {
     const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
     const socketIo = getIo();
     if (socketIo && message) {
-      socketIo.emit(`message_read_${message.sender_id}`, { messageId: req.params.messageId, read_by: req.user.id });
+      socketIo.emit(`message_read_${message.sender_id}`, { messageId: req.params.messageId, readBy: req.user.id });
     }
 
     res.json({ message: 'Message marked as read.' });
@@ -142,7 +156,7 @@ router.put('/:messageId/read', authenticate, (req, res) => {
   }
 });
 
-// POST /:messageId/reply - reply to message
+// POST /:messageId/reply
 router.post('/:messageId/reply', authenticate, (req, res) => {
   try {
     const originalMessage = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
@@ -161,14 +175,14 @@ router.post('/:messageId/reply', authenticate, (req, res) => {
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(content || '[Media]', originalMessage.conversation_id);
 
-    const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
-    res.status(201).json({ message });
+    const message = fixBooleans(db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId));
+    res.status(201).json(message);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /:messageId/forward - forward message
+// POST /:messageId/forward
 router.post('/:messageId/forward', authenticate, (req, res) => {
   try {
     const originalMessage = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
@@ -181,7 +195,6 @@ router.post('/:messageId/forward', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id is required.' });
     }
 
-    // Find or create conversation with receiver
     let conversation = db.prepare(`
       SELECT c.id FROM conversations c
       JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
@@ -206,14 +219,14 @@ router.post('/:messageId/forward', authenticate, (req, res) => {
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(originalMessage.content || '[Media]', conversation.id);
 
-    const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
-    res.status(201).json({ message });
+    const message = fixBooleans(db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId));
+    res.status(201).json(message);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /:messageId - soft delete
+// DELETE /:messageId
 router.delete('/:messageId', authenticate, (req, res) => {
   try {
     const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
@@ -222,11 +235,10 @@ router.delete('/:messageId', authenticate, (req, res) => {
     }
 
     if (message.sender_id !== req.user.id) {
-      return res.status(403).json({ error: 'Cannot delete other user\'s message.' });
+      return res.status(403).json({ error: "Cannot delete other user's message." });
     }
 
     db.prepare('UPDATE messages SET deleted = 1 WHERE id = ?').run(req.params.messageId);
-
     res.json({ message: 'Message deleted.' });
   } catch (err) {
     res.status(500).json({ error: err.message });

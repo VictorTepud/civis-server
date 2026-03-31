@@ -58,8 +58,9 @@ router.post('/login', (req, res) => {
 
     const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
-    // Excluir password y privacy_settings (que es un string JSON, no un objeto)
+    // Solo campos seguros, excluir password y privacy_settings
     const safeUser = db.prepare('SELECT id, email, name, phone, avatar, bio, online, last_seen, created_at FROM users WHERE id = ?').get(user.id);
+
     res.json({ user: safeUser, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
