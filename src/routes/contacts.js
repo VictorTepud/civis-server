@@ -5,15 +5,18 @@ const { authenticate } = require('../middlewares/authMiddleware');
 
 const router = express.Router();
 
-// POST /add - add contact by email
+// POST /add - add contact by email or userId
 router.post('/add', authenticate, (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required.' });
+    const { email, userId } = req.body;
+    
+    let contactUser;
+    if (email) {
+      contactUser = db.prepare('SELECT id, email, name FROM users WHERE email = ?').get(email);
+    } else if (userId) {
+      contactUser = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(userId);
     }
-
-    const contactUser = db.prepare('SELECT id, email, name FROM users WHERE email = ?').get(email);
+    
     if (!contactUser) {
       return res.status(404).json({ error: 'User not found.' });
     }
@@ -37,7 +40,7 @@ router.post('/add', authenticate, (req, res) => {
     });
     insertMany();
 
-    res.status(201).json({ message: 'Contact added.', contact: contactUser });
+    res.status(201).json({ contact: contactUser });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
