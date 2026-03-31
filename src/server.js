@@ -37,7 +37,36 @@ setupSocket(io);
 app.use(cors());
 app.use(express.json());
 
+// Nombres de campos booleanos que SQLite almacena como 0/1
+const BOOLEAN_FIELDS = [
+  'online', 'read', 'deleted', 'forwarded', 'muted', 'blocked',
+  'only_admins_can_send', 'only_admins_can_edit', 'only_admins_can_post', 'is_public'
+];
+
+// Convierte recursivamente 0/1 a true/false para campos booleanos conocidos
+function fixResponseBooleans(data) {
+  if (data === null || data === undefined) return data;
+  if (Array.isArray(data)) {
+    return data.map(fixResponseBooleans);
+  }
+  if (typeof data === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(data)) {
+      if ((value === 0 || value === 1) && BOOLEAN_FIELDS.includes(key)) {
+        result[key] = value === 1;
+      } else if (typeof value === 'object' && value !== null) {
+        result[key] = fixResponseBooleans(value);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+  return data;
+}
+
 // Response wrapper: todas las respuestas exitosas se envuelven en { success: true, data: ... }
+// Además convierte 0/1 a true/false automáticamente
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = function (data) {
@@ -45,8 +74,9 @@ app.use((req, res, next) => {
     if (res.statusCode >= 400) {
       return originalJson(data);
     }
-    // Envolver en formato estándar
-    return originalJson({ success: true, data: data });
+    // Corregir booleanos y envolver en formato estándar
+    const fixedData = fixResponseBooleans(data);
+    return originalJson({ success: true, data: fixedData });
   };
   next();
 });
