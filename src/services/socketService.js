@@ -20,10 +20,10 @@ function setupSocket(io) {
       return contacts.map(c => c.contact_id);
     };
 
-    // Emit user_online to contacts
+    // Emit user_online to contacts (camelCase para Android JSONObject)
     const contactIds = getContactUserIds();
     contactIds.forEach(contactId => {
-      io.emit(`user_online_${contactId}`, { user_id: userId });
+      io.emit(`user_online_${contactId}`, { userId: userId });
     });
 
     // On disconnect
@@ -32,46 +32,52 @@ function setupSocket(io) {
 
       const cIds = getContactUserIds();
       cIds.forEach(contactId => {
-        io.emit(`user_offline_${contactId}`, { user_id: userId });
+        io.emit(`user_offline_${contactId}`, { userId: userId });
       });
     });
 
-    // On typing
+    // On typing (Android envía camelCase: targetId, conversationId)
     socket.on('typing', (data) => {
-      const { target_id, conversation_id } = data;
-      if (target_id) {
-        io.emit(`typing_${target_id}`, { user_id: userId, conversation_id });
+      const targetId = data.targetId || data.target_id;
+      const conversationId = data.conversationId || data.conversation_id;
+      if (targetId) {
+        io.emit(`typing_${targetId}`, { userId: userId, conversationId: conversationId });
       }
-      if (conversation_id) {
-        io.emit(`conversation_typing_${conversation_id}`, { user_id: userId });
+      if (conversationId) {
+        io.emit(`conversation_typing_${conversationId}`, { userId: userId });
       }
     });
 
     // On stop_typing
     socket.on('stop_typing', (data) => {
-      const { target_id, conversation_id } = data;
-      if (target_id) {
-        io.emit(`stop_typing_${target_id}`, { user_id: userId, conversation_id });
+      const targetId = data.targetId || data.target_id;
+      const conversationId = data.conversationId || data.conversation_id;
+      if (targetId) {
+        io.emit(`stop_typing_${targetId}`, { userId: userId, conversationId: conversationId });
       }
-      if (conversation_id) {
-        io.emit(`conversation_stop_typing_${conversation_id}`, { user_id: userId });
+      if (conversationId) {
+        io.emit(`conversation_stop_typing_${conversationId}`, { userId: userId });
       }
     });
 
-    // On message_read
+    // On message_read (Android envía camelCase: messageId, senderId)
     socket.on('message_read', (data) => {
-      const { message_id, sender_id } = data;
-      if (message_id && sender_id) {
+      const messageId = data.messageId || data.message_id;
+      const senderId = data.senderId || data.sender_id;
+      if (messageId && senderId) {
         db.prepare('UPDATE messages SET read = 1 WHERE id = ? AND receiver_id = ?')
-          .run(message_id, userId);
-        io.emit(`message_read_${sender_id}`, { message_id, read_by: userId });
+          .run(messageId, userId);
+        io.emit(`message_read_${senderId}`, { messageId: messageId, readBy: userId });
       }
     });
 
-    // On private_message
+    // On private_message (Android envía camelCase)
     socket.on('private_message', (data) => {
-      const { receiver_id, content, message_type, media_url, reply_to, forwarded } = data;
-      if (!receiver_id) return;
+      const receiverId = data.receiverId || data.receiver_id;
+      const messageType = data.messageType || data.message_type;
+      const mediaUrl = data.mediaUrl || data.media_url;
+      const replyTo = data.replyTo || data.reply_to;
+      if (!receiverId) return;
 
       const { v4: uuidv4 } = require('uuid');
 
@@ -81,39 +87,43 @@ function setupSocket(io) {
         JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
         JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
         WHERE c.type = 'private'
-      `).get(userId, receiver_id);
+      `).get(userId, receiverId);
 
       if (!conversation) {
         const convId = uuidv4();
         db.prepare('INSERT INTO conversations (id, type, created_by) VALUES (?, ?, ?)').run(convId, 'private', userId);
         db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, userId);
-        db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiver_id);
+        db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiverId);
         conversation = { id: convId };
       }
 
       const messageId = uuidv4();
       db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, reply_to, forwarded)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(messageId, conversation.id, userId, receiver_id, content || null,
-          message_type || 'text', media_url || null, reply_to || null, forwarded ? 1 : 0);
+        .run(messageId, conversation.id, userId, receiverId, data.content || null,
+          messageType || 'text', mediaUrl || null, replyTo || null, data.forwarded ? 1 : 0);
 
       db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
-        .run(content || '[Media]', conversation.id);
+        .run(data.content || '[Media]', conversation.id);
 
       const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
       const sender = db.prepare('SELECT id, name, avatar FROM users WHERE id = ?').get(userId);
       const messageWithSender = { ...message, sender };
-      io.emit(`message_${receiver_id}`, messageWithSender);
+      // Emit raw SQL row (snake_case) — Android lo parsea con appGson (snake_case)
+      io.emit(`message_${receiverId}`, messageWithSender);
     });
 
-    // On group_message
+    // On group_message (Android envía camelCase)
     socket.on('group_message', (data) => {
-      const { group_id, content, message_type, media_url, reply_to } = data;
-      if (!group_id) return;
+      const groupId = data.groupId || data.group_id;
+      const messageType = data.messageType || data.message_type;
+      const mediaUrl = data.mediaUrl || data.media_url;
+      const replyTo = data.replyTo || data.reply_to;
+      if (!groupId) return;
 
       const { v4: uuidv4 } = require('uuid');
 
-      const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(group_id);
+      const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
       if (!group) return;
 
       // Get or create conversation for group
@@ -128,16 +138,16 @@ function setupSocket(io) {
       const messageId = uuidv4();
       db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, group_id, content, message_type, media_url, reply_to)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(messageId, conversationId, userId, group_id, content || null,
-          message_type || 'text', media_url || null, reply_to || null);
+        .run(messageId, conversationId, userId, groupId, data.content || null,
+          messageType || 'text', mediaUrl || null, replyTo || null);
 
       db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
-        .run(content || '[Media]', conversationId);
+        .run(data.content || '[Media]', conversationId);
 
       const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
 
       // Emit to all group members
-      const members = db.prepare('SELECT user_id FROM group_members WHERE group_id = ?').all(group_id);
+      const members = db.prepare('SELECT user_id FROM group_members WHERE group_id = ?').all(groupId);
       members.forEach(member => {
         if (member.user_id !== userId) {
           io.emit(`group_message_${member.user_id}`, message);
@@ -145,19 +155,21 @@ function setupSocket(io) {
       });
     });
 
-    // On channel_message
+    // On channel_message (Android envía camelCase)
     socket.on('channel_message', (data) => {
-      const { channel_id, content, message_type, media_url } = data;
-      if (!channel_id) return;
+      const channelId = data.channelId || data.channel_id;
+      const messageType = data.messageType || data.message_type;
+      const mediaUrl = data.mediaUrl || data.media_url;
+      if (!channelId) return;
 
       const { v4: uuidv4 } = require('uuid');
 
-      const channel = db.prepare('SELECT * FROM community_channels WHERE id = ?').get(channel_id);
+      const channel = db.prepare('SELECT * FROM community_channels WHERE id = ?').get(channelId);
       if (!channel) return;
 
       const messageId = uuidv4();
       db.prepare('INSERT INTO channel_messages (id, channel_id, sender_id, content, message_type, media_url) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(messageId, channel_id, userId, content || null, message_type || 'text', media_url || null);
+        .run(messageId, channelId, userId, data.content || null, messageType || 'text', mediaUrl || null);
 
       const message = db.prepare('SELECT cm.*, u.name as sender_name FROM channel_messages cm JOIN users u ON cm.sender_id = u.id WHERE cm.id = ?').get(messageId);
 
@@ -170,21 +182,24 @@ function setupSocket(io) {
       });
     });
 
-    // On call_signal
+    // On call_signal (Android envía camelCase)
     socket.on('call_signal', (data) => {
-      const { call_id, target_user_id, signal_type, signal_data } = data;
-      if (!call_id || !signal_type) return;
+      const callId = data.callId || data.call_id;
+      const targetUserId = data.targetUserId || data.target_user_id;
+      const signalType = data.signalType || data.signal_type;
+      const signalData = data.signalData || data.signal_data;
+      if (!callId || !signalType) return;
 
       const { v4: uuidv4 } = require('uuid');
       const id = uuidv4();
       db.prepare('INSERT INTO call_signals (id, call_id, sender_id, signal_type, signal_data) VALUES (?, ?, ?, ?, ?)')
-        .run(id, call_id, userId, signal_type, signal_data || null);
+        .run(id, callId, userId, signalType, signalData || null);
 
       // Emit to specific target or all call participants
-      if (target_user_id) {
-        io.emit(`call_signal_${target_user_id}`, { call_id, sender_id: userId, signal_type, signal_data });
+      if (targetUserId) {
+        io.emit(`call_signal_${targetUserId}`, { callId: callId, senderId: userId, signalType: signalType, signalData: signalData });
       } else {
-        io.emit(`call_signal_all_${call_id}`, { call_id, sender_id: userId, signal_type, signal_data });
+        io.emit(`call_signal_all_${callId}`, { callId: callId, senderId: userId, signalType: signalType, signalData: signalData });
       }
     });
   });

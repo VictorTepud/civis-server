@@ -37,6 +37,29 @@ setupSocket(io);
 app.use(cors());
 app.use(express.json());
 
+// Convierte camelCase a snake_case en los bodies entrantes
+// (Android envía camelCase via Retrofit/Gson, SQLite usa snake_case)
+function toSnakeCase(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return obj;
+  if (Array.isArray(obj)) return obj.map(toSnakeCase);
+  if (typeof obj === 'object' && !(obj instanceof Date)) {
+    const newObj = {};
+    for (const key of Object.keys(obj)) {
+      const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+      newObj[snakeKey] = toSnakeCase(obj[key]);
+    }
+    return newObj;
+  }
+  return obj;
+}
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    req.body = toSnakeCase(req.body);
+  }
+  next();
+});
+
 // Nombres de campos booleanos que SQLite almacena como 0/1
 const BOOLEAN_FIELDS = [
   'online', 'read', 'deleted', 'forwarded', 'muted', 'blocked',
