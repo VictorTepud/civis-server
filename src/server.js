@@ -119,6 +119,18 @@ app.use('/api/calls', require('./routes/calls'));
 // Serve static files from uploads
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
+// 404 handler — devuelve JSON en vez de HTML
+app.use((req, res) => {
+  console.log(`[404] ${req.method} ${req.url} — Not Found`);
+  res.status(404).json({ error: `Route not found: ${req.method} ${req.url}` });
+});
+
+// Global error handler — devuelve JSON en vez de HTML
+app.use((err, req, res, next) => {
+  console.error(`[ERROR] ${req.method} ${req.url}:`, err.message);
+  res.status(err.status || 500).json({ error: err.message });
+});
+
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, '0.0.0.0', () => {
