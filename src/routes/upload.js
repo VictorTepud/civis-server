@@ -1,13 +1,14 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('../config/database');
 const { authenticate } = require('../middlewares/authMiddleware');
 
 const router = express.Router();
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
 
-// Multer storage configurations
+// Multer storage — genera nombres unicos con timestamp + hash (evita sobreescribir)
 function createStorage(subdir) {
   return multer.diskStorage({
     destination: (req, file, cb) => {
@@ -15,8 +16,9 @@ function createStorage(subdir) {
     },
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname);
-      const name = req.user ? req.user.id : Date.now().toString();
-      cb(null, `${name}${ext}`);
+      const hash = crypto.randomBytes(8).toString('hex');
+      const ts = Date.now();
+      cb(null, `${ts}_${hash}${ext}`);
     }
   });
 }
