@@ -117,7 +117,7 @@ app.use('/api/communities', require('./routes/communities'));
 app.use('/api/calls', require('./routes/calls'));
 
 // Serve static files from uploads
-app.use('/uploads', express.static(path.join(__dirname, '..', '..', 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 const PORT = process.env.PORT || 3000;
 
