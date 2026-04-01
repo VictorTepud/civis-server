@@ -44,11 +44,15 @@ const attachmentUpload = multer({
 // POST /avatar
 router.post('/avatar', authenticate, avatarUpload.single('avatar'), (req, res) => {
   try {
+    console.log('[UPLOAD] Avatar upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
     if (!req.file) {
+      console.log('[UPLOAD] ERROR: No file received');
       return res.status(400).json({ error: 'No file uploaded.' });
     }
     const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+    console.log('[UPLOAD] Avatar saved at:', avatarUrl);
     db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatarUrl, req.user.id);
+    console.log('[UPLOAD] Avatar updated in DB for user:', req.user.id);
     res.json({ url: avatarUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -58,10 +62,12 @@ router.post('/avatar', authenticate, avatarUpload.single('avatar'), (req, res) =
 // POST /media
 router.post('/media', authenticate, mediaUpload.single('media'), (req, res) => {
   try {
+    console.log('[UPLOAD] Media upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
     const url = `/uploads/media/${req.file.filename}`;
+    console.log('[UPLOAD] Media saved at:', url);
     res.json({ url });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -71,10 +77,12 @@ router.post('/media', authenticate, mediaUpload.single('media'), (req, res) => {
 // POST /status
 router.post('/status', authenticate, statusUpload.single('status'), (req, res) => {
   try {
+    console.log('[UPLOAD] Status upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
     const url = `/uploads/status/${req.file.filename}`;
+    console.log('[UPLOAD] Status saved at:', url);
     res.json({ url });
   } catch (err) {
     res.status(500).json({ error: err.message });
