@@ -92,6 +92,8 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
     question: poll.question,
     options: JSON.parse(poll.options),
     multiple: poll.multiple === 1,
+    accent_color: poll.accent_color || 'blue',
+    style: poll.style || 'bars',
   });
 
   const messageId = uuidv4();
@@ -131,7 +133,7 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
 // POST / — Create poll
 router.post('/', authenticate, (req, res) => {
   try {
-    const { receiver_id, group_id, question, options, multiple } = req.body;
+    const { receiver_id, group_id, question, options, multiple, accent_color, style } = req.body;
 
     if (!question || !question.trim()) {
       return res.status(400).json({ error: 'Question is required.' });
@@ -145,12 +147,15 @@ router.post('/', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id or group_id is required.' });
     }
 
+    const accentColor = accent_color || 'blue';
+    const pollStyle = style || 'bars';
+
     const pollId = uuidv4();
     const optionsJson = JSON.stringify(options);
 
     // Create poll
-    db.prepare('INSERT INTO polls (id, question, options, multiple, created_by) VALUES (?, ?, ?, ?, ?)')
-      .run(pollId, question.trim(), optionsJson, multiple ? 1 : 0, req.user.id);
+    db.prepare('INSERT INTO polls (id, question, options, multiple, created_by, accent_color, style) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(pollId, question.trim(), optionsJson, multiple ? 1 : 0, req.user.id, accentColor, pollStyle);
 
     const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
 
