@@ -220,7 +220,7 @@ router.post('/:groupId/messages', authenticate, (req, res) => {
       return res.status(403).json({ error: 'Not a member of this group.' });
     }
 
-    const { content, message_type, media_url, reply_to } = req.body;
+    const { content, message_type, media_url, reply_to, media_width, media_height } = req.body;
 
     // Find the conversation for this group
     const conversation = db.prepare(`
@@ -238,10 +238,10 @@ router.post('/:groupId/messages', authenticate, (req, res) => {
     }
 
     const messageId = uuidv4();
-    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, group_id, content, message_type, media_url, reply_to)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, group_id, content, message_type, media_url, reply_to, media_width, media_height)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(messageId, conversationId, req.user.id, req.params.groupId, content || null,
-        message_type || 'text', media_url || null, reply_to || null);
+        message_type || 'text', media_url || null, reply_to || null, media_width || null, media_height || null);
 
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(content || '[Media]', conversationId);
