@@ -189,7 +189,7 @@ db.exec(`
     total_votes INTEGER DEFAULT 0,
     created_by TEXT NOT NULL,
     message_id TEXT,
-    accent_color TEXT DEFAULT 'blue',
+    option_colors TEXT,
     style TEXT DEFAULT 'bars',
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -204,16 +204,16 @@ db.exec(`
   );
 `);
 
-// Migration: add accent_color and style columns to existing polls table
-try {
-  db.prepare('SELECT accent_color FROM polls LIMIT 1').get();
-} catch (e) {
-  db.exec('ALTER TABLE polls ADD COLUMN accent_color TEXT DEFAULT \'blue\'');
-}
+// Migration: add style and option_colors columns to existing polls table
 try {
   db.prepare('SELECT style FROM polls LIMIT 1').get();
 } catch (e) {
   db.exec('ALTER TABLE polls ADD COLUMN style TEXT DEFAULT \'bars\'');
+}
+try {
+  db.prepare('SELECT option_colors FROM polls LIMIT 1').get();
+} catch (e) {
+  db.exec('ALTER TABLE polls ADD COLUMN option_colors TEXT');
 }
 
 // Create indexes

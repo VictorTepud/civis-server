@@ -37,6 +37,7 @@ function formatPollWithVotes(poll, userId) {
 
   return {
     ...poll,
+    option_colors: poll.option_colors ? JSON.parse(poll.option_colors) : null,
     options: optionsWithCounts,
     user_voted: userVotes.length > 0,
     user_votes: userVotes,
@@ -92,7 +93,7 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
     question: poll.question,
     options: JSON.parse(poll.options),
     multiple: poll.multiple === 1,
-    accent_color: poll.accent_color || 'blue',
+    option_colors: poll.option_colors ? JSON.parse(poll.option_colors) : null,
     style: poll.style || 'bars',
   });
 
@@ -133,7 +134,7 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
 // POST / — Create poll
 router.post('/', authenticate, (req, res) => {
   try {
-    const { receiver_id, group_id, question, options, multiple, accent_color, style } = req.body;
+    const { receiver_id, group_id, question, options, multiple, option_colors, style } = req.body;
 
     if (!question || !question.trim()) {
       return res.status(400).json({ error: 'Question is required.' });
@@ -147,15 +148,20 @@ router.post('/', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id or group_id is required.' });
     }
 
-    const accentColor = accent_color || 'blue';
     const pollStyle = style || 'bars';
+    const optionColors = option_colors && Array.isArray(option_colors) ? JSON.stringify(option_colors) : null;
 
     const pollId = uuidv4();
     const optionsJson = JSON.stringify(options);
 
-    // Create poll
-    db.prepare('INSERT INTO polls (id, question, options, multiple, created_by, accent_color, style) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(pollId, question.trim(), optionsJson, multiple ? 1 : 0, req.user.id, accentColor, pollStyle);
+    // Create poll - store option_colors as JSON if provided
+    if (optionColors) {
+      db.prepare('INSERT INTO polls (id, question, options, multiple, created_by, option_colors, style) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(pollId, question.trim(), optionsJson, multiple ? 1 : 0, req.user.id, optionColors, pollStyle);
+    } else {
+      db.prepare('INSERT INTO polls (id, question, options, multiple, created_by, style) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(pollId, question.trim(), optionsJson, multiple ? 1 : 0, req.user.id, pollStyle);
+    }
 
     const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
 
