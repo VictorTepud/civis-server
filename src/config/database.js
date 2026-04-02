@@ -50,8 +50,6 @@ db.exec(`
     forwarded INTEGER DEFAULT 0,
     read INTEGER DEFAULT 0,
     deleted INTEGER DEFAULT 0,
-    media_width INTEGER,
-    media_height INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
   );
 

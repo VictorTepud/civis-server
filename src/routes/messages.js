@@ -216,7 +216,7 @@ router.post('/:messageId/forward', authenticate, (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(messageId, conversation.id, req.user.id, receiver_id,
         originalMessage.content, originalMessage.message_type, originalMessage.media_url, 1,
-        originalMessage.media_width, originalMessage.media_height);
+        originalMessage.media_width || null, originalMessage.media_height || null);
 
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(originalMessage.content || '[Media]', conversation.id);
