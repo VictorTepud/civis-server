@@ -66,7 +66,7 @@ router.get('/conversations', authenticate, (req, res) => {
 // POST /send
 router.post('/send', authenticate, (req, res) => {
   try {
-    const { receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded } = req.body;
+    const { receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded, media_width, media_height } = req.body;
 
     if (!receiver_id && !req.body.group_id) {
       return res.status(400).json({ error: 'receiver_id is required.' });
@@ -89,11 +89,11 @@ router.post('/send', authenticate, (req, res) => {
     }
 
     const messageId = uuidv4();
-    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded, media_width, media_height)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(messageId, conversation.id, req.user.id, receiver_id, content || null,
         message_type || 'text', media_url || null, location_lat || null, location_lng || null,
-        reply_to || null, forwarded ? 1 : 0);
+        reply_to || null, forwarded ? 1 : 0, media_width || null, media_height || null);
 
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(content || '[Media]', conversation.id);
@@ -164,13 +164,14 @@ router.post('/:messageId/reply', authenticate, (req, res) => {
       return res.status(404).json({ error: 'Message not found.' });
     }
 
-    const { content, message_type, media_url } = req.body;
+    const { content, message_type, media_url, media_width, media_height } = req.body;
     const messageId = uuidv4();
 
-    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, reply_to)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, reply_to, media_width, media_height)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(messageId, originalMessage.conversation_id, req.user.id, originalMessage.sender_id,
-        content || null, message_type || 'text', media_url || null, req.params.messageId);
+        content || null, message_type || 'text', media_url || null, req.params.messageId,
+        media_width || null, media_height || null);
 
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(content || '[Media]', originalMessage.conversation_id);
@@ -211,10 +212,11 @@ router.post('/:messageId/forward', authenticate, (req, res) => {
     }
 
     const messageId = uuidv4();
-    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, forwarded, media_width, media_height)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(messageId, conversation.id, req.user.id, receiver_id,
-        originalMessage.content, originalMessage.message_type, originalMessage.media_url, 1);
+        originalMessage.content, originalMessage.message_type, originalMessage.media_url, 1,
+        originalMessage.media_width, originalMessage.media_height);
 
     db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
       .run(originalMessage.content || '[Media]', conversation.id);

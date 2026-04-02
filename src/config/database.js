@@ -50,6 +50,8 @@ db.exec(`
     forwarded INTEGER DEFAULT 0,
     read INTEGER DEFAULT 0,
     deleted INTEGER DEFAULT 0,
+    media_width INTEGER,
+    media_height INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -214,6 +216,14 @@ try {
   db.prepare('SELECT option_colors FROM polls LIMIT 1').get();
 } catch (e) {
   db.exec('ALTER TABLE polls ADD COLUMN option_colors TEXT');
+}
+
+// Migration: add media_width and media_height to messages
+try {
+  db.prepare('SELECT media_width FROM messages LIMIT 1').get();
+} catch (e) {
+  db.exec('ALTER TABLE messages ADD COLUMN media_width INTEGER');
+  db.exec('ALTER TABLE messages ADD COLUMN media_height INTEGER');
 }
 
 // Create indexes
