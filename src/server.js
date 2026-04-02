@@ -115,6 +115,7 @@ app.use('/api/upload', require('./routes/upload'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/communities', require('./routes/communities'));
 app.use('/api/calls', require('./routes/calls'));
+app.use('/api/polls', require('./routes/polls'));
 
 // Serve static files from uploads
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));

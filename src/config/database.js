@@ -180,6 +180,26 @@ db.exec(`
     status TEXT DEFAULT 'pending',
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS polls (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL,
+    multiple INTEGER DEFAULT 0,
+    total_votes INTEGER DEFAULT 0,
+    created_by TEXT NOT NULL,
+    message_id TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS poll_votes (
+    id TEXT PRIMARY KEY,
+    poll_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    option_index INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(poll_id, user_id, option_index)
+  );
 `);
 
 // Create indexes
@@ -202,6 +222,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_statuses_user_id ON statuses(user_id);
   CREATE INDEX IF NOT EXISTS idx_conversation_participants_user_id ON conversation_participants(user_id);
   CREATE INDEX IF NOT EXISTS idx_conversation_participants_conversation_id ON conversation_participants(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_id ON poll_votes(poll_id);
+  CREATE INDEX IF NOT EXISTS idx_poll_votes_user_id ON poll_votes(user_id);
 `);
 
 module.exports = db;
