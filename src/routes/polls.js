@@ -87,7 +87,7 @@ function getOrCreateGroupConversation(groupId) {
 }
 
 // Helper: send poll message and emit via socket
-function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
+function sendPollMessage(poll, conversationId, senderId, receiverId, groupId, replyTo) {
   const messageContent = JSON.stringify({
     poll_id: poll.id,
     question: poll.question,
@@ -98,9 +98,9 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
   });
 
   const messageId = uuidv4();
-  db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, group_id, content, message_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(messageId, conversationId, senderId, receiverId || null, groupId || null, messageContent, 'poll');
+  db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, group_id, content, message_type, reply_to)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(messageId, conversationId, senderId, receiverId || null, groupId || null, messageContent, 'poll', replyTo || null);
 
   db.prepare(`UPDATE conversations SET last_message = ?, last_message_time = datetime('now') WHERE id = ?`)
     .run('📊 Poll: ' + poll.question, conversationId);
@@ -134,7 +134,7 @@ function sendPollMessage(poll, conversationId, senderId, receiverId, groupId) {
 // POST / — Create poll
 router.post('/', authenticate, (req, res) => {
   try {
-    const { receiver_id, group_id, question, options, multiple, option_colors, style } = req.body;
+    const { receiver_id, group_id, question, options, multiple, option_colors, style, reply_to } = req.body;
 
     if (!question || !question.trim()) {
       return res.status(400).json({ error: 'Question is required.' });
@@ -184,7 +184,7 @@ router.post('/', authenticate, (req, res) => {
     }
 
     // Send the poll as a message
-    const message = sendPollMessage(poll, conversationId, req.user.id, receiver_id || null, group_id || null);
+    const message = sendPollMessage(poll, conversationId, req.user.id, receiver_id || null, group_id || null, reply_to || null);
 
     res.status(201).json({
       poll: formatPollWithVotes(poll, req.user.id),
