@@ -52,7 +52,14 @@ router.get('/conversations', authenticate, (req, res) => {
           JOIN users u ON cp.user_id = u.id
           WHERE cp.conversation_id = ? AND cp.user_id != ?
         `).get(fixed.id, req.user.id);
-        fixed.other_user = otherParticipant ? fixBooleans(otherParticipant) : null;
+        if (otherParticipant) {
+          fixed.other_user = fixBooleans(otherParticipant);
+        } else {
+          // Self-chat: both participants are the same user
+          const selfUser = db.prepare('SELECT id, name, avatar, online, last_seen FROM users WHERE id = ?').get(req.user.id);
+          fixed.other_user = selfUser ? fixBooleans(selfUser) : null;
+          fixed.is_self_chat = true;
+        }
       }
       return fixed;
     });
