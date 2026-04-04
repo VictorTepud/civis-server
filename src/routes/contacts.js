@@ -8,13 +8,14 @@ const router = express.Router();
 // POST /add - add contact by email or userId
 router.post('/add', authenticate, (req, res) => {
   try {
-    const { email, userId } = req.body;
+    const { email, userId, user_id } = req.body;
+    const targetUserId = userId || user_id;
     
     let contactUser;
     if (email) {
       contactUser = db.prepare('SELECT id, email, name FROM users WHERE email = ?').get(email);
-    } else if (userId) {
-      contactUser = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(userId);
+    } else if (targetUserId) {
+      contactUser = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(targetUserId);
     }
     
     if (!contactUser) {
@@ -49,14 +50,15 @@ router.post('/add', authenticate, (req, res) => {
 // DELETE /remove - remove contact
 router.delete('/remove', authenticate, (req, res) => {
   try {
-    const { contactId } = req.body;
-    if (!contactId) {
+    const { contactId, contact_id } = req.body;
+    const targetContactId = contactId || contact_id;
+    if (!targetContactId) {
       return res.status(400).json({ error: 'contactId is required.' });
     }
 
     const deleteContact = db.transaction(() => {
-      db.prepare('DELETE FROM contacts WHERE user_id = ? AND contact_id = ?').run(req.user.id, contactId);
-      db.prepare('DELETE FROM contacts WHERE user_id = ? AND contact_id = ?').run(contactId, req.user.id);
+      db.prepare('DELETE FROM contacts WHERE user_id = ? AND contact_id = ?').run(req.user.id, targetContactId);
+      db.prepare('DELETE FROM contacts WHERE user_id = ? AND contact_id = ?').run(targetContactId, req.user.id);
     });
     deleteContact();
 
