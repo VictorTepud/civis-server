@@ -70,6 +70,31 @@ router.get('/conversations', authenticate, (req, res) => {
   }
 });
 
+// GET /conversation/find?receiver_id=xxx - find existing conversation between current user and receiver
+router.get('/conversation/find', authenticate, (req, res) => {
+  try {
+    const { receiver_id } = req.query;
+    if (!receiver_id) {
+      return res.status(400).json({ error: 'receiver_id is required.' });
+    }
+
+    const conversation = db.prepare(`
+      SELECT c.id FROM conversations c
+      JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
+      JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
+      WHERE c.type = 'private'
+    `).get(req.user.id, receiver_id);
+
+    if (conversation) {
+      res.json({ conversationId: conversation.id });
+    } else {
+      res.status(404).json({ error: 'Conversation not found.' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /send
 router.post('/send', authenticate, (req, res) => {
   try {
