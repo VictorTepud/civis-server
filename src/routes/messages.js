@@ -15,6 +15,43 @@ function getIo() {
   return io;
 }
 
+// Helper: find or create a private conversation (handles self-chat correctly)
+function findOrCreateConversation(userId, receiverId) {
+  const isSelfChat = userId === receiverId;
+
+  let conversation;
+  if (isSelfChat) {
+    // Self-chat: buscar conversación donde el usuario es el ÚNICO participante
+    conversation = db.prepare(`
+      SELECT c.id FROM conversations c
+      JOIN conversation_participants cp ON c.id = cp.conversation_id AND cp.user_id = ?
+      WHERE c.type = 'private'
+      AND (SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = c.id) = 1
+    `).get(userId);
+  } else {
+    // Chat normal: ambos usuarios deben ser participantes
+    conversation = db.prepare(`
+      SELECT c.id FROM conversations c
+      JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
+      JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
+      WHERE c.type = 'private'
+    `).get(userId, receiverId);
+  }
+
+  if (!conversation) {
+    const convId = uuidv4();
+    db.prepare('INSERT INTO conversations (id, type, created_by) VALUES (?, ?, ?)').run(convId, 'private', userId);
+    db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, userId);
+    // Solo insertar segundo participante si NO es self-chat (PK constraint)
+    if (!isSelfChat) {
+      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiverId);
+    }
+    conversation = { id: convId };
+  }
+
+  return conversation;
+}
+
 // Convierte 0/1 a true/false para campos booleanos de SQLite
 function fixBooleans(obj) {
   const result = { ...obj };
@@ -78,23 +115,7 @@ router.post('/conversation/find-or-create', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id is required.' });
     }
 
-    // Buscar conversación existente
-    let conversation = db.prepare(`
-      SELECT c.id FROM conversations c
-      JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
-      JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
-      WHERE c.type = 'private'
-    `).get(req.user.id, receiver_id);
-
-    // Si no existe, crear una nueva
-    if (!conversation) {
-      const convId = uuidv4();
-      db.prepare('INSERT INTO conversations (id, type, created_by) VALUES (?, ?, ?)').run(convId, 'private', req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiver_id);
-      conversation = { id: convId };
-    }
-
+    const conversation = findOrCreateConversation(req.user.id, receiver_id);
     res.json({ conversationId: conversation.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -110,21 +131,8 @@ router.post('/send', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id is required.' });
     }
 
-    // Find or create conversation
-    let conversation = db.prepare(`
-      SELECT c.id FROM conversations c
-      JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
-      JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
-      WHERE c.type = 'private'
-    `).get(req.user.id, receiver_id);
-
-    if (!conversation) {
-      const convId = uuidv4();
-      db.prepare('INSERT INTO conversations (id, type, created_by) VALUES (?, ?, ?)').run(convId, 'private', req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiver_id);
-      conversation = { id: convId };
-    }
+    // Find or create conversation (handles self-chat correctly)
+    const conversation = findOrCreateConversation(req.user.id, receiver_id);
 
     const messageId = uuidv4();
     db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, location_lat, location_lng, reply_to, forwarded, media_width, media_height)
@@ -234,20 +242,7 @@ router.post('/:messageId/forward', authenticate, (req, res) => {
       return res.status(400).json({ error: 'receiver_id is required.' });
     }
 
-    let conversation = db.prepare(`
-      SELECT c.id FROM conversations c
-      JOIN conversation_participants cp1 ON c.id = cp1.conversation_id AND cp1.user_id = ?
-      JOIN conversation_participants cp2 ON c.id = cp2.conversation_id AND cp2.user_id = ?
-      WHERE c.type = 'private'
-    `).get(req.user.id, receiver_id);
-
-    if (!conversation) {
-      const convId = uuidv4();
-      db.prepare('INSERT INTO conversations (id, type, created_by) VALUES (?, ?, ?)').run(convId, 'private', req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, req.user.id);
-      db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)').run(convId, receiver_id);
-      conversation = { id: convId };
-    }
+    const conversation = findOrCreateConversation(req.user.id, receiver_id);
 
     const messageId = uuidv4();
     db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, media_url, forwarded, media_width, media_height)
