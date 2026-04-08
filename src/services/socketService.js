@@ -486,22 +486,6 @@ function handleSendMessage(io, socket, senderId, data, db) {
     });
   }
 
-  // Enviar push notification al receptor
-  try {
-    const fcmService = require('./fcmService');
-    const sender = db.prepare('SELECT display_name, avatar FROM users WHERE id = ?').get(senderId);
-    fcmService.sendPush(otherUserId, {
-      type: 'chat_message',
-      senderName: sender?.display_name || 'Nuevo mensaje',
-      senderAvatar: sender?.avatar || '',
-      senderId: senderId,
-      content: type === 'text' ? (content || '') : `[${type}]`,
-      conversationId: conversation_id
-    });
-  } catch (e) {
-    // FCM no disponible, continuar sin push
-  }
-
   // Emitir a todos los sockets del remitente para sincronización
   emitToUser(io, senderId, 'message:sync', { message, conversation_id });
 }
