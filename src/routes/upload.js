@@ -1,118 +1,133 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
-const crypto = require('crypto');
-const db = require('../config/database');
+const { v4: uuidv4 } = require('uuid');
 const { authenticate } = require('../middlewares/authMiddleware');
 
 const router = express.Router();
-const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
+router.use(authenticate);
 
-// Multer storage — genera nombres unicos con timestamp + hash (evita sobreescribir)
-function createStorage(subdir) {
-  return multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, path.join(UPLOAD_DIR, subdir));
-    },
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      const hash = crypto.randomBytes(8).toString('hex');
-      const ts = Date.now();
-      cb(null, `${ts}_${hash}${ext}`);
-    }
-  });
-}
+// =============================================
+// CONFIGURACIÓN MULTER - STORAGE
+// =============================================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    let uploadPath = 'uploads/media';
+    const type = req.query.type || 'media';
 
-const avatarUpload = multer({
-  storage: createStorage('avatars'),
-  limits: { fileSize: 5 * 1024 * 1024 }
-});
+    if (type === 'avatar') uploadPath = 'uploads/avatars';
+    else if (type === 'status') uploadPath = 'uploads/status';
 
-const mediaUpload = multer({
-  storage: createStorage('media'),
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
-
-const statusUpload = multer({
-  storage: createStorage('status'),
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
-
-const attachmentUpload = multer({
-  storage: createStorage('attachments'),
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
-
-// POST /avatar
-router.post('/avatar', authenticate, avatarUpload.single('avatar'), (req, res) => {
-  try {
-    console.log('[UPLOAD] Avatar upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
-    if (!req.file) {
-      console.log('[UPLOAD] ERROR: No file received');
-      return res.status(400).json({ error: 'No file uploaded.' });
-    }
-    const avatarUrl = `/uploads/avatars/${req.file.filename}`;
-    console.log('[UPLOAD] Avatar saved at:', avatarUrl);
-    db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatarUrl, req.user.id);
-    console.log('[UPLOAD] Avatar updated in DB for user:', req.user.id);
-    res.json({ url: avatarUrl });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const filename = `${uuidv4()}${ext}`;
+    cb(null, filename);
   }
 });
 
-// POST /media
-router.post('/media', authenticate, mediaUpload.single('media'), (req, res) => {
-  try {
-    console.log('[UPLOAD] Media upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded.' });
-    }
-    const url = `/uploads/media/${req.file.filename}`;
-    console.log('[UPLOAD] Media saved at:', url);
-    res.json({ url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// =============================================
+// FILTRO DE ARCHIVOS
+// =============================================
+const fileFilter = (req, file, cb) => {
+  const allowedMimes = [
+    // Imágenes
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+    // Video
+    'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo',
+    // Audio
+    'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/aac',
+    // Documentos
+    'application/pdf', 'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain', 'text/csv',
+  ];
+
+  if (allowedMimes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Tipo de archivo no permitido'), false);
+  }
+};
+
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: parseInt(process.env.UPLOAD_MAX_SIZE) || 50 * 1024 * 1024, // 50MB
   }
 });
 
-// POST /status
-router.post('/status', authenticate, statusUpload.single('status'), (req, res) => {
-  try {
-    console.log('[UPLOAD] Status upload - user:', req.user?.id, 'file:', req.file?.originalname, 'size:', req.file?.size);
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded.' });
-    }
-    const url = `/uploads/status/${req.file.filename}`;
-    console.log('[UPLOAD] Status saved at:', url);
-    res.json({ url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /attachment
-router.post('/attachment', authenticate, attachmentUpload.single('attachment'), (req, res) => {
+// =============================================
+// SUBIR ARCHIVO
+// =============================================
+router.post('/', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded.' });
+      return res.status(400).json({ success: false, error: 'No se proporcionó ningún archivo' });
     }
-    const url = `/uploads/attachments/${req.file.filename}`;
-    res.json({ url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    const type = req.query.type || 'media';
+    const filePath = `/${type === 'avatar' ? 'avatars' : type === 'status' ? 'status' : 'media'}/${req.file.filename}`;
+
+    res.json({
+      success: true,
+      data: {
+        url: filePath,
+        file_name: req.file.originalname,
+        mime_type: req.file.mimetype,
+        size: req.file.size,
+      }
+    });
+  } catch (error) {
+    console.error('Error al subir archivo:', error);
+    res.status(500).json({ success: false, error: 'Error interno del servidor' });
   }
 });
 
-// GET /:type/:filename - serve file
-router.get('/:type/:filename', authenticate, (req, res) => {
-  const allowedTypes = ['avatars', 'media', 'status', 'attachments'];
-  const type = req.params.type;
-  if (!allowedTypes.includes(type)) {
-    return res.status(400).json({ error: 'Invalid file type.' });
+// =============================================
+// SUBIR MÚLTIPLES ARCHIVOS
+// =============================================
+router.post('/multiple', upload.array('files', 10), (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No se proporcionaron archivos' });
+    }
+
+    const type = req.query.type || 'media';
+    const dirName = type === 'avatar' ? 'avatars' : type === 'status' ? 'status' : 'media';
+
+    const files = req.files.map(file => ({
+      url: `/${dirName}/${file.filename}`,
+      file_name: file.originalname,
+      mime_type: file.mimetype,
+      size: file.size
+    }));
+
+    res.json({ success: true, data: { files } });
+  } catch (error) {
+    console.error('Error al subir archivos:', error);
+    res.status(500).json({ success: false, error: 'Error interno del servidor' });
   }
-  const filePath = path.join(UPLOAD_DIR, type, req.params.filename);
-  res.sendFile(path.resolve(filePath));
+});
+
+// Manejo de errores de multer
+router.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, error: 'El archivo excede el tamaño máximo permitido (50MB)' });
+    }
+    return res.status(400).json({ success: false, error: err.message });
+  }
+  if (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+  next();
 });
 
 module.exports = router;

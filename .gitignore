@@ -1,5 +1,12 @@
 node_modules/
-data/
-uploads/
+uploads/avatars/*
+uploads/media/*
+uploads/status/*
+!uploads/avatars/.gitkeep
+!uploads/media/.gitkeep
+!uploads/status/.gitkeep
+*.db
+*.db-shm
+*.db-wal
 .env
-package-lock.json
+src/config/firebase-service-account.json

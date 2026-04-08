@@ -3,139 +3,111 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const path = require('path');
-const fs = require('fs');
 
-// Initialize database
-const db = require('./config/database');
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+const contactRoutes = require('./routes/contacts');
+const messageRoutes = require('./routes/messages');
+const groupRoutes = require('./routes/groups');
+const statusRoutes = require('./routes/status');
+const uploadRoutes = require('./routes/upload');
+const searchRoutes = require('./routes/search');
+const communityRoutes = require('./routes/communities');
+const callRoutes = require('./routes/calls');
 
-// Create required directories
-const dirs = ['data', 'uploads/avatars', 'uploads/media', 'uploads/status', 'uploads/attachments'];
-dirs.forEach(dir => {
-  const fullDir = path.join(__dirname, '..', '..', dir);
-  if (!fs.existsSync(fullDir)) {
-    fs.mkdirSync(fullDir, { recursive: true });
-  }
-});
+const { initDatabase } = require('./config/database');
+const { setupSocket } = require('./services/socketService');
+const fcmService = require('./services/fcmService');
+const { authenticateSocket } = require('./middlewares/authMiddleware');
 
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io setup
+// ===================== CORS =====================
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// ===================== MIDDLEWARES =====================
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(cookieParser());
+
+// Archivos estáticos para uploads
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+
+// ===================== RUTAS REST =====================
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/contacts', contactRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/groups', groupRoutes);
+app.use('/api/status', statusRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/communities', communityRoutes);
+app.use('/api/calls', callRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', service: 'Civis Server', version: '1.0.0' });
+});
+
+// ===================== SOCKET.IO =====================
 const io = new Server(server, {
   cors: {
     origin: '*',
-    methods: ['GET', 'POST']
-  }
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
-// Import socket service
-const { setupSocket } = require('./services/socketService');
+// Middleware de autenticación para sockets
+io.use(authenticateSocket);
+
+// Configurar eventos de socket
 setupSocket(io);
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ===================== INICIO =====================
+const PORT = process.env.PORT || 3001;
 
-// Convierte camelCase a snake_case en los bodies entrantes
-// (Android envía camelCase via Retrofit/Gson, SQLite usa snake_case)
-function toSnakeCase(obj) {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') return obj;
-  if (Array.isArray(obj)) return obj.map(toSnakeCase);
-  if (typeof obj === 'object' && !(obj instanceof Date)) {
-    const newObj = {};
-    for (const key of Object.keys(obj)) {
-      const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-      newObj[snakeKey] = toSnakeCase(obj[key]);
-    }
-    return newObj;
-  }
-  return obj;
-}
-app.use((req, res, next) => {
-  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
-    req.body = toSnakeCase(req.body);
-  }
-  next();
-});
+async function startServer() {
+  try {
+    // Inicializar base de datos
+    initDatabase();
+    console.log('✅ Base de datos SQLite inicializada correctamente');
 
-// Nombres de campos booleanos que SQLite almacena como 0/1
-const BOOLEAN_FIELDS = [
-  'online', 'read', 'deleted', 'forwarded', 'muted', 'blocked',
-  'only_admins_can_send', 'only_admins_can_edit', 'only_admins_can_post', 'is_public'
-];
+    // Inicializar Firebase Cloud Messaging
+    fcmService.init();
 
-// Convierte recursivamente 0/1 a true/false para campos booleanos conocidos
-function fixResponseBooleans(data) {
-  if (data === null || data === undefined) return data;
-  if (Array.isArray(data)) {
-    return data.map(fixResponseBooleans);
+    // Iniciar servidor HTTP
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Servidor Civis ejecutándose en http://0.0.0.0:${PORT}`);
+      console.log(`📡 Socket.io listo para conexiones en tiempo real`);
+      console.log(`📁 Uploads disponibles en /uploads`);
+    });
+  } catch (error) {
+    console.error('❌ Error al iniciar el servidor:', error);
+    process.exit(1);
   }
-  if (typeof data === 'object') {
-    const result = {};
-    for (const [key, value] of Object.entries(data)) {
-      if ((value === 0 || value === 1) && BOOLEAN_FIELDS.includes(key)) {
-        result[key] = value === 1;
-      } else if (typeof value === 'object' && value !== null) {
-        result[key] = fixResponseBooleans(value);
-      } else {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-  return data;
 }
 
-// Response wrapper: todas las respuestas exitosas se envuelven en { success: true, data: ... }
-// Además convierte 0/1 a true/false automáticamente
-app.use((req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = function (data) {
-    // Errores pasan tal cual
-    if (res.statusCode >= 400) {
-      return originalJson(data);
-    }
-    // Corregir booleanos y envolver en formato estándar
-    const fixedData = fixResponseBooleans(data);
-    return originalJson({ success: true, data: fixedData });
-  };
-  next();
+startServer();
+
+// Manejo de errores no capturados
+process.on('uncaughtException', (error) => {
+  console.error('❌ Excepción no capturada:', error);
 });
 
-// Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/users', require('./routes/users'));
-app.use('/api/contacts', require('./routes/contacts'));
-app.use('/api/messages', require('./routes/messages'));
-app.use('/api/groups', require('./routes/groups'));
-app.use('/api/status', require('./routes/status'));
-app.use('/api/upload', require('./routes/upload'));
-app.use('/api/search', require('./routes/search'));
-app.use('/api/communities', require('./routes/communities'));
-app.use('/api/calls', require('./routes/calls'));
-app.use('/api/polls', require('./routes/polls'));
-
-// Serve static files from uploads
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
-
-// 404 handler — devuelve JSON en vez de HTML
-app.use((req, res) => {
-  console.log(`[404] ${req.method} ${req.url} — Not Found`);
-  res.status(404).json({ error: `Route not found: ${req.method} ${req.url}` });
-});
-
-// Global error handler — devuelve JSON en vez de HTML
-app.use((err, req, res, next) => {
-  console.error(`[ERROR] ${req.method} ${req.url}:`, err.message);
-  res.status(err.status || 500).json({ error: err.message });
-});
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Civis server running on port ${PORT}`);
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Promesa rechazada no manejada:', reason);
 });
 
 module.exports = { app, server, io };

@@ -1,902 +1,792 @@
+/**
+ * Script de pruebas para Civis Server
+ * Inicia el servidor automáticamente, ejecuta tests y se limpia
+ */
+const { spawn, execSync } = require('child_process');
+const path = require('path');
 const http = require('http');
-const assert = require('assert');
-const { spawn } = require('child_process');
 
-const BASE_URL = 'http://localhost:3000';
-let serverProcess = null;
+const PROJECT_ROOT = path.join(__dirname, '..');
+const BASE = 'http://127.0.0.1:3001';
+let serverProcess;
 let passed = 0;
 let failed = 0;
-const testResults = [];
+const errors = [];
 
-// Test helper
-async function request(method, path, body = null, token = null) {
+function request(method, urlPath, body = null, token = null) {
   return new Promise((resolve, reject) => {
-    const url = new URL(path, BASE_URL);
+    const url = new URL(urlPath, BASE);
     const options = {
       hostname: url.hostname,
       port: url.port,
       path: url.pathname + url.search,
-      method: method,
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 5000
     };
-
-    if (token) {
-      options.headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    if (body) {
-      const bodyStr = JSON.stringify(body);
-      options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
-    }
+    if (token) options.headers['Authorization'] = `Bearer ${token}`;
 
     const req = http.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve({ status: res.statusCode, body: parsed });
-        } catch (e) {
-          resolve({ status: res.statusCode, body: data });
-        }
+        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+        catch (e) { resolve({ status: res.statusCode, data, raw: true }); }
       });
     });
-
     req.on('error', reject);
-
-    if (body) {
-      req.write(JSON.stringify(body));
-    }
-    req.setTimeout(10000, () => {
-      req.destroy(new Error('Request timeout'));
-    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+    if (body) req.write(JSON.stringify(body));
     req.end();
   });
 }
 
-function runTest(name, fn) {
+function test(name, fn) {
   return fn().then(() => {
     passed++;
-    testResults.push({ name, status: 'PASSED' });
-    console.log(`  ✅ PASSED: ${name}`);
+    console.log(`  ✅ ${name}`);
   }).catch(err => {
     failed++;
-    testResults.push({ name, status: 'FAILED', error: err.message });
-    console.log(`  ❌ FAILED: ${name} - ${err.message}`);
+    errors.push({ name, error: err.message });
+    console.log(`  ❌ ${name}: ${err.message}`);
   });
 }
 
-async function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg || 'Assertion failed');
+}
+
+function waitForServer(maxRetries = 20) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const check = () => {
+      http.get(`${BASE}/api/health`, (res) => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { JSON.parse(d); resolve(); } catch(e) { retry(); } });
+      }).on('error', retry);
+
+      function retry() {
+        attempts++;
+        if (attempts >= maxRetries) { reject(new Error('Server never started')); return; }
+        setTimeout(check, 300);
+      }
+    };
+    check();
+  });
 }
 
 async function main() {
-  console.log('\n🚀 Starting Civis Server Tests...\n');
-
-  // Start server
-  console.log('Starting server...');
-  serverProcess = spawn('node', ['src/server.js'], {
-    cwd: __dirname + '/..',
-    stdio: 'pipe',
-    env: { ...process.env, PORT: '3000' }
-  });
-
-  // Wait for server to start
-  await sleep(2000);
-
-  // Check server is running
+  // Clean and seed
+  console.log('🧹 Limpiando base de datos...');
   try {
-    await request('GET', '/api/auth/verify-token');
-  } catch (e) {
-    console.error('Server failed to start!');
-    console.error(e.message);
-    serverProcess.kill();
+    execSync('rm -rf ' + path.join(PROJECT_ROOT, 'data'), { stdio: 'ignore' });
+    execSync('rm -rf ' + path.join(PROJECT_ROOT, 'src', 'data'), { stdio: 'ignore' });
+  } catch(e) {}
+
+  console.log('🌱 Ejecutando seed...');
+  try {
+    const seedOut = execSync(`node ${path.join(PROJECT_ROOT, 'scripts', 'seed.js')}`, {
+      encoding: 'utf-8', cwd: PROJECT_ROOT
+    });
+    const lines = seedOut.trim().split('\n');
+    console.log(lines[lines.length - 1]);
+  } catch(e) {
+    console.error('❌ Seed failed:', e.stderr || e.message);
     process.exit(1);
   }
 
-  // ==================== AUTH TESTS ====================
-  console.log('\n📋 Auth Tests:');
+  // Start server
+  console.log('🚀 Iniciando servidor...');
+  serverProcess = spawn('node', [path.join(PROJECT_ROOT, 'src', 'server.js')], {
+    cwd: PROJECT_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env }
+  });
 
-  // Test 1: Register new user
-  await runTest('POST /api/auth/register - Register new user', async () => {
-    const res = await request('POST', '/api/auth/register', {
-      email: 'test@civis.com',
-      name: 'Test User',
-      password: 'testpass123'
+  serverProcess.stdout.on('data', d => process.stdout.write(d));
+  serverProcess.stderr.on('data', d => process.stderr.write(d));
+
+  await waitForServer();
+  console.log('✅ Servidor listo\n');
+
+  console.log('='.repeat(60));
+  console.log('🧪 EJECUTANDO PRUEBAS EXHAUSTIVAS DE CIVIS');
+  console.log('='.repeat(60));
+
+  let juanToken, mariaToken, carlosToken, juanId, mariaId;
+
+  // ==========================================
+  // AUTH
+  // ==========================================
+  console.log('\n📦 MÓDULO: AUTENTICACIÓN');
+  console.log('-'.repeat(40));
+
+  await test('Health Check', async () => {
+    const r = await request('GET', '/api/health');
+    assert(r.data.status === 'ok');
+  });
+
+  await test('Login Juan Pérez', async () => {
+    const r = await request('POST', '/api/auth/login', { email: 'juan.perez@civis.app', password: '123456' });
+    assert(r.data.success, JSON.stringify(r.data));
+    juanToken = r.data.data.token;
+    juanId = r.data.data.user.id;
+    assert(r.data.data.user.display_name === 'Juan Pérez');
+  });
+
+  await test('Login María García', async () => {
+    const r = await request('POST', '/api/auth/login', { email: 'maria.garcia@civis.app', password: '123456' });
+    assert(r.data.success);
+    mariaToken = r.data.data.token;
+    mariaId = r.data.data.user.id;
+  });
+
+  await test('Login Carlos López', async () => {
+    const r = await request('POST', '/api/auth/login', { email: 'carlos.lopez@civis.app', password: '123456' });
+    assert(r.data.success);
+    carlosToken = r.data.data.token;
+  });
+
+  await test('Login con contraseña incorrecta', async () => {
+    const r = await request('POST', '/api/auth/login', { email: 'juan.perez@civis.app', password: 'wrong' });
+    assert(!r.data.success);
+    assert(r.status === 401);
+  });
+
+  await test('Login con email inexistente', async () => {
+    const r = await request('POST', '/api/auth/login', { email: 'nobody@test.com', password: '123456' });
+    assert(!r.data.success);
+    assert(r.status === 401);
+  });
+
+  await test('Verificar token JWT', async () => {
+    const r = await request('GET', '/api/auth/verify', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.user.email === 'juan.perez@civis.app');
+  });
+
+  await test('Rechazar token inválido', async () => {
+    const r = await request('GET', '/api/auth/verify', null, 'bad_token');
+    assert(r.status === 401);
+  });
+
+  await test('Rechazar sin token', async () => {
+    const r = await request('GET', '/api/auth/verify');
+    assert(r.status === 401);
+  });
+
+  await test('Registrar nuevo usuario', async () => {
+    const r = await request('POST', '/api/auth/register', {
+      email: 'nuevo@civis.app',
+      password: '123456',
+      display_name: 'Usuario Nuevo'
     });
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.user);
-    assert.ok(res.body.token);
-    assert.strictEqual(res.body.user.email, 'test@civis.com');
+    assert(r.data.success);
+    assert(r.data.data.token);
+    assert(r.data.data.user.email === 'nuevo@civis.app');
   });
 
-  // Test 2: Register duplicate user
-  await runTest('POST /api/auth/register - Reject duplicate email', async () => {
-    const res = await request('POST', '/api/auth/register', {
-      email: 'test@civis.com',
-      name: 'Test User 2',
-      password: 'testpass123'
+  await test('Rechazar registro duplicado', async () => {
+    const r = await request('POST', '/api/auth/register', {
+      email: 'juan.perez@civis.app',
+      password: '123456',
+      display_name: 'Duplicado'
     });
-    assert.strictEqual(res.status, 409);
+    assert(!r.data.success);
+    assert(r.status === 409);
   });
 
-  // Test 3: Register missing fields
-  await runTest('POST /api/auth/register - Reject missing fields', async () => {
-    const res = await request('POST', '/api/auth/register', {
-      email: 'incomplete@civis.com'
-    });
-    assert.strictEqual(res.status, 400);
+  // ==========================================
+  // USERS
+  // ==========================================
+  console.log('\n📦 MÓDULO: USUARIOS');
+  console.log('-'.repeat(40));
+
+  await test('Obtener mi perfil', async () => {
+    const r = await request('GET', '/api/users/me', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.user.display_name === 'Juan Pérez');
+    assert(r.data.data.user.username === 'juanperez');
   });
 
-  // Test 4: Login with valid credentials
-  await runTest('POST /api/auth/login - Login successfully', async () => {
-    const res = await request('POST', '/api/auth/login', {
-      email: 'test@civis.com',
-      password: 'testpass123'
-    });
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.user);
-    assert.ok(res.body.token);
+  await test('Actualizar perfil (nombre y about)', async () => {
+    const r = await request('PUT', '/api/users/me', {
+      display_name: 'Juan Pérez G.',
+      about: 'Creador de Civis 🚀'
+    }, juanToken);
+    assert(r.data.success);
+    const profile = await request('GET', '/api/users/me', null, juanToken);
+    assert(profile.data.data.user.display_name === 'Juan Pérez G.');
+    assert(profile.data.data.user.about === 'Creador de Civis 🚀');
   });
 
-  // Test 5: Login with wrong password
-  await runTest('POST /api/auth/login - Reject wrong password', async () => {
-    const res = await request('POST', '/api/auth/login', {
-      email: 'test@civis.com',
-      password: 'wrongpassword'
-    });
-    assert.strictEqual(res.status, 401);
+  await test('Buscar usuario por ID', async () => {
+    const r = await request('GET', `/api/users/${mariaId}`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.user.display_name === 'María García');
   });
 
-  // Test 6: Login with non-existent email
-  await runTest('POST /api/auth/login - Reject non-existent email', async () => {
-    const res = await request('POST', '/api/auth/login', {
-      email: 'nonexistent@civis.com',
-      password: 'password'
-    });
-    assert.strictEqual(res.status, 401);
+  await test('Actualizar privacidad', async () => {
+    const r = await request('PUT', '/api/users/privacy', {
+      privacy_last_seen: 1,
+      privacy_profile_photo: 0
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 7: Verify token
-  let authToken;
-  await runTest('GET /api/auth/verify-token - Verify valid token', async () => {
-    const loginRes = await request('POST', '/api/auth/login', {
-      email: 'test@civis.com',
-      password: 'testpass123'
-    });
-    authToken = loginRes.body.token;
+  // ==========================================
+  // CONTACTS
+  // ==========================================
+  console.log('\n📦 MÓDULO: CONTACTOS');
+  console.log('-'.repeat(40));
 
-    const res = await request('GET', '/api/auth/verify-token', null, authToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.user);
-    assert.strictEqual(res.body.user.email, 'test@civis.com');
+  await test('Listar contactos de Juan', async () => {
+    const r = await request('GET', '/api/contacts', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.contacts.length > 0);
+    console.log(`     → ${r.data.data.contacts.length} contactos`);
   });
 
-  // Test 8: Verify invalid token
-  await runTest('GET /api/auth/verify-token - Reject invalid token', async () => {
-    const res = await request('GET', '/api/auth/verify-token', null, 'invalid_token');
-    assert.strictEqual(res.status, 401);
+  await test('Verificar si es contacto', async () => {
+    const r = await request('GET', `/api/contacts/${mariaId}/check`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.is_contact === true);
   });
 
-  // Test 9: Logout
-  await runTest('POST /api/auth/logout - Logout successfully', async () => {
-    const res = await request('POST', '/api/auth/logout');
-    assert.strictEqual(res.status, 200);
+  await test('Actualizar apodo de contacto', async () => {
+    const r = await request('PUT', `/api/contacts/${mariaId}/nickname`, { nickname: 'Mari ❤️' }, juanToken);
+    assert(r.data.success);
   });
 
-  // ==================== USER TESTS ====================
-  console.log('\n📋 User Tests:');
-
-  // Get auth token for user tests
-  const loginRes = await request('POST', '/api/auth/login', { email: 'carlos@civis.com', password: 'password123' });
-  const userToken = loginRes.body.token;
-  const userId = loginRes.body.user.id;
-
-  // Test 10: Get profile
-  await runTest('GET /api/users/profile - Get own profile', async () => {
-    const res = await request('GET', '/api/users/profile', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.user);
-    assert.strictEqual(res.body.user.email, 'carlos@civis.com');
+  await test('Silenciar contacto', async () => {
+    const r = await request('PUT', `/api/contacts/${mariaId}/mute`, { muted: true }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 11: Update profile
-  await runTest('PUT /api/users/profile - Update profile', async () => {
-    const res = await request('PUT', '/api/users/profile', {
-      name: 'Carlos Mendoza Updated',
-      bio: 'Updated bio',
-      phone: '+1-555-9999'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.user.name, 'Carlos Mendoza Updated');
-    assert.strictEqual(res.body.user.bio, 'Updated bio');
+  // ==========================================
+  // CONVERSATIONS
+  // ==========================================
+  console.log('\n📦 MÓDULO: CONVERSACIONES');
+  console.log('-'.repeat(40));
+
+  await test('Listar conversaciones de Juan', async () => {
+    const r = await request('GET', '/api/messages/conversations', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.conversations.length > 0);
+    console.log(`     → ${r.data.data.conversations.length} conversaciones`);
   });
 
-  // Test 12: Update privacy settings
-  await runTest('PUT /api/users/privacy - Update privacy settings', async () => {
-    const res = await request('PUT', '/api/users/privacy', {
-      privacy_settings: { show_last_seen: true, show_online: false }
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.user.privacy_settings);
+  let convId;
+  await test('Crear/obtener conversación con María', async () => {
+    const r = await request('POST', '/api/messages/conversations', { other_user_id: mariaId }, juanToken);
+    assert(r.data.success);
+    convId = r.data.data.conversation_id;
+    assert(convId);
   });
 
-  // Test 13: Change password
-  await runTest('PUT /api/users/password - Change password', async () => {
-    const res = await request('PUT', '/api/users/password', {
-      old_password: 'password123',
-      new_password: 'newpassword456'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-
-    // Verify new password works
-    const loginNew = await request('POST', '/api/auth/login', {
-      email: 'carlos@civis.com',
-      password: 'newpassword456'
-    });
-    assert.strictEqual(loginNew.status, 200);
-
-    // Revert password
-    await request('PUT', '/api/users/password', {
-      old_password: 'newpassword456',
-      new_password: 'password123'
-    }, userToken);
+  await test('No crear conversación consigo mismo', async () => {
+    const r = await request('POST', '/api/messages/conversations', { other_user_id: juanId }, juanToken);
+    assert(r.status === 400);
   });
 
-  // Test 14: Change password wrong old
-  await runTest('PUT /api/users/password - Reject wrong old password', async () => {
-    const res = await request('PUT', '/api/users/password', {
-      old_password: 'wrongpassword',
-      new_password: 'anotherpass'
-    }, userToken);
-    assert.strictEqual(res.status, 401);
+  // ==========================================
+  // MESSAGES 1-TO-1
+  // ==========================================
+  console.log('\n📦 MÓDULO: MENSAJES 1-A-1');
+  console.log('-'.repeat(40));
+
+  let msgId;
+  await test('Enviar mensaje de texto', async () => {
+    const r = await request('POST', `/api/messages/conversations/${convId}/messages`, {
+      content: '¡Hola María! Probando Civis 🚀',
+      message_type: 'text'
+    }, juanToken);
+    assert(r.data.success);
+    msgId = r.data.data.message.id;
+    assert(msgId);
+    assert(r.data.data.message.content === '¡Hola María! Probando Civis 🚀');
   });
 
-  // Get another user's ID
-  const mariaLogin = await request('POST', '/api/auth/login', { email: 'maria@civis.com', password: 'password123' });
-  const mariaId = mariaLogin.body.user.id;
-
-  // Test 15: Get another user's profile
-  await runTest('GET /api/users/:userId - Get other user profile', async () => {
-    const res = await request('GET', `/api/users/${mariaId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.user);
-    assert.strictEqual(res.body.user.name, 'María García');
-    // Should not contain email for privacy
-    assert.strictEqual(res.body.user.email, undefined);
+  await test('Enviar mensaje con ubicación', async () => {
+    const r = await request('POST', `/api/messages/conversations/${convId}/messages`, {
+      message_type: 'location',
+      latitude: 19.4326,
+      longitude: -99.1332,
+      location_name: 'Ciudad de México'
+    }, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.message.message_type === 'location');
   });
 
-  // ==================== CONTACT TESTS ====================
-  console.log('\n📋 Contact Tests:');
-
-  // Login as test user for contact tests
-  const testLogin = await request('POST', '/api/auth/login', { email: 'test@civis.com', password: 'testpass123' });
-  const testToken = testLogin.body.token;
-
-  // Test 16: Add contact
-  await runTest('POST /api/contacts/add - Add contact', async () => {
-    const res = await request('POST', '/api/contacts/add', {
-      email: 'juan@civis.com'
-    }, testToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.contact);
-    assert.strictEqual(res.body.contact.name, 'Juan Pérez');
-  });
-
-  // Test 17: Add self as contact
-  await runTest('POST /api/contacts/add - Reject adding self', async () => {
-    const res = await request('POST', '/api/contacts/add', {
-      email: 'test@civis.com'
-    }, testToken);
-    assert.strictEqual(res.status, 400);
-  });
-
-  // Test 18: Add duplicate contact
-  await runTest('POST /api/contacts/add - Reject duplicate contact', async () => {
-    const res = await request('POST', '/api/contacts/add', {
-      email: 'juan@civis.com'
-    }, testToken);
-    assert.strictEqual(res.status, 409);
-  });
-
-  // Test 19: Add non-existent contact
-  await runTest('POST /api/contacts/add - Reject non-existent user', async () => {
-    const res = await request('POST', '/api/contacts/add', {
-      email: 'nobody@civis.com'
-    }, testToken);
-    assert.strictEqual(res.status, 404);
-  });
-
-  // Test 20: List contacts
-  await runTest('GET /api/contacts/ - List contacts', async () => {
-    const res = await request('GET', '/api/contacts/', null, testToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.contacts));
-    assert.ok(res.body.contacts.length > 0);
-  });
-
-  // Test 21: Block contact
-  await runTest('PUT /api/contacts/:contactId/block - Block contact', async () => {
-    const juanLogin = await request('POST', '/api/auth/login', { email: 'juan@civis.com', password: 'password123' });
-    const juanId = juanLogin.body.user.id;
-
-    const res = await request('PUT', `/api/contacts/${juanId}/block`, {}, testToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.blocked, true);
-  });
-
-  // Test 22: Unblock contact
-  await runTest('PUT /api/contacts/:contactId/block - Unblock contact', async () => {
-    const juanLogin = await request('POST', '/api/auth/login', { email: 'juan@civis.com', password: 'password123' });
-    const juanId = juanLogin.body.user.id;
-
-    const res = await request('PUT', `/api/contacts/${juanId}/block`, {}, testToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.blocked, false);
-  });
-
-  // Test 23: Mute contact
-  await runTest('PUT /api/contacts/:contactId/mute - Mute contact', async () => {
-    const juanLogin = await request('POST', '/api/auth/login', { email: 'juan@civis.com', password: 'password123' });
-    const juanId = juanLogin.body.user.id;
-
-    const res = await request('PUT', `/api/contacts/${juanId}/mute`, {}, testToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.muted, true);
-  });
-
-  // Test 24: Set nickname
-  await runTest('PUT /api/contacts/:contactId/nickname - Set nickname', async () => {
-    const juanLogin = await request('POST', '/api/auth/login', { email: 'juan@civis.com', password: 'password123' });
-    const juanId = juanLogin.body.user.id;
-
-    const res = await request('PUT', `/api/contacts/${juanId}/nickname`, {
-      nickname: 'Juanito'
-    }, testToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.nickname, 'Juanito');
-  });
-
-  // Test 25: Remove contact
-  await runTest('DELETE /api/contacts/remove - Remove contact', async () => {
-    const juanLogin = await request('POST', '/api/auth/login', { email: 'juan@civis.com', password: 'password123' });
-    const juanId = juanLogin.body.user.id;
-
-    const res = await request('DELETE', '/api/contacts/remove', {
-      contactId: juanId
-    }, testToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // ==================== MESSAGE TESTS ====================
-  console.log('\n📋 Message Tests:');
-
-  // Test 26: Get conversations
-  await runTest('GET /api/messages/conversations - List conversations', async () => {
-    const res = await request('GET', '/api/messages/conversations', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.conversations));
-  });
-
-  // Test 27: Send message
-  let messageConversationId;
-  await runTest('POST /api/messages/send - Send message', async () => {
-    const res = await request('POST', '/api/messages/send', {
-      receiver_id: mariaId,
-      content: 'Hello María! This is a test message.'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.message);
-    assert.strictEqual(res.body.message.content, 'Hello María! This is a test message.');
-    messageConversationId = res.body.message.conversation_id;
-  });
-
-  // Test 28: Send image message
-  await runTest('POST /api/messages/send - Send image message', async () => {
-    const res = await request('POST', '/api/messages/send', {
-      receiver_id: mariaId,
-      content: null,
+  await test('Enviar mensaje multimedia (simulado)', async () => {
+    const r = await request('POST', `/api/messages/conversations/${convId}/messages`, {
       message_type: 'image',
-      media_url: '/uploads/media/test.jpg'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.strictEqual(res.body.message.message_type, 'image');
+      media_url: '/media/test-image.jpg',
+      media_mime_type: 'image/jpeg',
+      media_size: 102400,
+      caption: '¡Mira esta foto!'
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 29: Get messages for conversation
-  await runTest('GET /api/messages/:conversationId - Get messages', async () => {
-    const res = await request('GET', `/api/messages/${messageConversationId}?limit=10&offset=0`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.messages));
-    assert.ok(res.body.messages.length > 0);
+  await test('Obtener mensajes (como María)', async () => {
+    const r = await request('GET', `/api/messages/conversations/${convId}/messages`, null, mariaToken);
+    assert(r.data.success);
+    assert(r.data.data.messages.length >= 3);
+    console.log(`     → ${r.data.data.messages.length} mensajes`);
+    assert(r.data.data.pagination.has_more === false);
   });
 
-  // Test 30: Get messages with pagination
-  await runTest('GET /api/messages/:conversationId - Paginate messages', async () => {
-    const res = await request('GET', `/api/messages/${messageConversationId}?limit=1&offset=0`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.messages.length <= 1);
+  await test('Marcar mensajes como leídos', async () => {
+    const r = await request('PUT', `/api/messages/conversations/${convId}/read`, null, mariaToken);
+    assert(r.data.success);
   });
 
-  // Get message ID for further tests
-  let messageId;
-  {
-    const msgs = await request('GET', `/api/messages/${messageConversationId}`, null, userToken);
-    messageId = msgs.body.messages.find(m => m.content === 'Hello María! This is a test message.').id;
-  }
-
-  // Test 31: Mark message as read
-  await runTest('PUT /api/messages/:messageId/read - Mark as read', async () => {
-    const res = await request('PUT', `/api/messages/${messageId}/read`, {}, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Responder a mensaje', async () => {
+    const r = await request('POST', `/api/messages/conversations/${convId}/messages`, {
+      content: '¡Hola Juan! Civis está increíble 😊',
+      message_type: 'text',
+      replied_to_id: msgId
+    }, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 32: Reply to message
-  await runTest('POST /api/messages/:messageId/reply - Reply to message', async () => {
-    const res = await request('POST', `/api/messages/${messageId}/reply`, {
-      content: 'This is a reply!'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.message);
-    assert.strictEqual(res.body.message.reply_to, messageId);
+  await test('Obtener mensaje por ID', async () => {
+    const r = await request('GET', `/api/messages/messages/${msgId}`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.message.id === msgId);
   });
 
-  // Test 33: Forward message
-  await runTest('POST /api/messages/:messageId/forward - Forward message', async () => {
-    const anaLogin = await request('POST', '/api/auth/login', { email: 'ana@civis.com', password: 'password123' });
-    const anaId = anaLogin.body.user.id;
-
-    const res = await request('POST', `/api/messages/${messageId}/forward`, {
-      receiver_id: anaId
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.message);
-    assert.strictEqual(res.body.message.forwarded, 1);
+  await test('Eliminar mensaje para mí', async () => {
+    const r = await request('DELETE', `/api/messages/messages/${msgId}`, null, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 34: Delete message (soft)
-  await runTest('DELETE /api/messages/:messageId - Soft delete message', async () => {
-    const res = await request('DELETE', `/api/messages/${messageId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Reenviar mensaje', async () => {
+    // First get another conversation
+    const convs = await request('GET', '/api/messages/conversations', null, juanToken);
+    const otherConv = convs.data.data.conversations.find(c => c.conversation_id !== convId);
+    assert(otherConv, 'Need another conversation');
+    
+    const r = await request('POST', `/api/messages/messages/${msgId}/forward`, {
+      target_conversation_id: otherConv.conversation_id
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // ==================== GROUP TESTS ====================
-  console.log('\n📋 Group Tests:');
+  // ==========================================
+  // GROUPS
+  // ==========================================
+  console.log('\n📦 MÓDULO: GRUPOS');
+  console.log('-'.repeat(40));
 
-  // Get IDs for group tests
-  const luisLogin = await request('POST', '/api/auth/login', { email: 'luis@civis.com', password: 'password123' });
-  const luisId = luisLogin.body.user.id;
-  const sofiaLogin = await request('POST', '/api/auth/login', { email: 'sofia@civis.com', password: 'password123' });
-  const sofiaId = sofiaLogin.body.user.id;
-
-  // Test 35: Create group
   let groupId;
-  await runTest('POST /api/groups/ - Create group', async () => {
-    const res = await request('POST', '/api/groups/', {
-      name: 'Test Group',
-      description: 'A test group',
-      members: [mariaId, luisId]
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.group);
-    assert.strictEqual(res.body.group.name, 'Test Group');
-    groupId = res.body.group.id;
+  await test('Listar grupos', async () => {
+    const r = await request('GET', '/api/groups', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.groups.length > 0);
+    groupId = r.data.data.groups[0].id;
+    console.log(`     → ${r.data.data.groups.length} grupos`);
   });
 
-  // Test 36: Create group without name
-  await runTest('POST /api/groups/ - Reject group without name', async () => {
-    const res = await request('POST', '/api/groups/', {
-      description: 'No name group'
-    }, userToken);
-    assert.strictEqual(res.status, 400);
+  await test('Obtener info de grupo con miembros', async () => {
+    const r = await request('GET', `/api/groups/${groupId}`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.group.name);
+    assert(r.data.data.members.length > 0);
+    console.log(`     → ${r.data.data.group.name} (${r.data.data.members.length} miembros)`);
   });
 
-  // Test 37: List groups
-  await runTest('GET /api/groups/ - List user groups', async () => {
-    const res = await request('GET', '/api/groups/', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.groups));
-    assert.ok(res.body.groups.length > 0);
+  let newGroupId;
+  await test('Crear nuevo grupo', async () => {
+    const r = await request('POST', '/api/groups', {
+      name: '🧪 Grupo de Pruebas Civis',
+      description: 'Creado durante tests automatizados',
+      member_ids: [mariaId]
+    }, juanToken);
+    assert(r.data.success);
+    newGroupId = r.data.data.group_id;
   });
 
-  // Test 38: Get group info
-  await runTest('GET /api/groups/:groupId - Get group details', async () => {
-    const res = await request('GET', `/api/groups/${groupId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.group);
-    assert.ok(Array.isArray(res.body.members));
-    assert.ok(res.body.members.length >= 2);
+  await test('Enviar mensaje al grupo', async () => {
+    const r = await request('POST', `/api/groups/${newGroupId}/messages`, {
+      content: '¡Primer mensaje del grupo de pruebas! 🧪',
+      message_type: 'text'
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 39: Update group
-  await runTest('PUT /api/groups/:groupId - Update group', async () => {
-    const res = await request('PUT', `/api/groups/${groupId}`, {
-      name: 'Updated Test Group',
-      description: 'Updated description'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.group.name, 'Updated Test Group');
+  await test('María responde al grupo', async () => {
+    const r = await request('POST', `/api/groups/${newGroupId}/messages`, {
+      content: '¡Funciona perfecto! 👏',
+      message_type: 'text'
+    }, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 40: Add group member
-  await runTest('POST /api/groups/:groupId/members - Add member', async () => {
-    const res = await request('POST', `/api/groups/${groupId}/members`, {
-      members: [sofiaId]
-    }, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Obtener mensajes del grupo', async () => {
+    const r = await request('GET', `/api/groups/${newGroupId}/messages`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.messages.length >= 2);
+    console.log(`     → ${r.data.data.messages.length} mensajes en grupo`);
   });
 
-  // Test 41: Change member role
-  await runTest('PUT /api/groups/:groupId/members/:userId/role - Change role', async () => {
-    const res = await request('PUT', `/api/groups/${groupId}/members/${sofiaId}/role`, {
-      role: 'moderator'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Silenciar grupo', async () => {
+    const r = await request('PUT', `/api/groups/${newGroupId}/mute`, { muted: true }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 42: Remove group member
-  await runTest('DELETE /api/groups/:groupId/members/:userId - Remove member', async () => {
-    const res = await request('DELETE', `/api/groups/${groupId}/members/${luisId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Actualizar nombre del grupo', async () => {
+    const r = await request('PUT', `/api/groups/${newGroupId}`, { name: '🧪 Tests Civis (editado)' }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 43: Send group message
-  await runTest('POST /api/groups/:groupId/messages - Send group message', async () => {
-    const res = await request('POST', `/api/groups/${groupId}/messages`, {
-      content: 'Hello group! This is a test message.'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.message);
-    assert.strictEqual(res.body.message.content, 'Hello group! This is a test message.');
-  });
+  // ==========================================
+  // STATUS / STORIES
+  // ==========================================
+  console.log('\n📦 MÓDULO: ESTADOS/ESTORIES');
+  console.log('-'.repeat(40));
 
-  // Test 44: Get group messages
-  await runTest('GET /api/groups/:groupId/messages - Get group messages', async () => {
-    const res = await request('GET', `/api/groups/${groupId}/messages`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.messages));
-  });
-
-  // ==================== STATUS TESTS ====================
-  console.log('\n📋 Status Tests:');
-
-  // Test 45: Create text status
   let statusId;
-  await runTest('POST /api/status/ - Create text status', async () => {
-    const res = await request('POST', '/api/status/', {
-      type: 'text',
-      content: 'Testing status feature!',
+  await test('Publicar estado de texto', async () => {
+    const r = await request('POST', '/api/status', {
+      content_type: 'text',
+      content: '¡Probando estados en Civis! 🔥',
       background_color: '#FF5722'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.status);
-    assert.strictEqual(res.body.status.content, 'Testing status feature!');
-    statusId = res.body.status.id;
+    }, juanToken);
+    assert(r.data.success);
+    statusId = r.data.data.status_id;
   });
 
-  // Test 46: Create status without content
-  await runTest('POST /api/status/ - Reject status without content', async () => {
-    const res = await request('POST', '/api/status/', {
-      type: 'text'
-    }, userToken);
-    assert.strictEqual(res.status, 400);
+  await test('Ver mi estado', async () => {
+    const r = await request('GET', '/api/status/my', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.statuses.length > 0);
+    console.log(`     → ${r.data.data.statuses.length} estados propios`);
   });
 
-  // Test 47: List statuses (from contacts + own)
-  await runTest('GET /api/status/ - List statuses', async () => {
-    const res = await request('GET', '/api/status/', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.statuses));
+  await test('Feed de estados', async () => {
+    const r = await request('GET', '/api/status/feed', null, mariaToken);
+    assert(r.data.success);
+    assert(r.data.data.statuses.length > 0);
   });
 
-  // Test 48: Get own statuses
-  await runTest('GET /api/status/my - List own statuses', async () => {
-    const res = await request('GET', '/api/status/my', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.statuses));
-    assert.ok(res.body.statuses.length > 0);
+  await test('María ve el estado de Juan', async () => {
+    const r = await request('POST', `/api/status/${statusId}/view`, null, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 49: View status
-  await runTest('POST /api/status/:statusId/view - View status', async () => {
-    const res = await request('POST', `/api/status/${statusId}/view`, {}, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.viewed, true);
+  await test('Obtener vistas del estado', async () => {
+    const r = await request('GET', `/api/status/${statusId}/views`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.views.length >= 1);
+    console.log(`     → ${r.data.data.views.length} vistas`);
   });
 
-  // Test 50: Reply to status
-  await runTest('POST /api/status/:statusId/reply - Reply to status', async () => {
-    const res = await request('POST', `/api/status/${statusId}/reply`, {
-      content: 'Nice status!'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
+  await test('Responder a estado', async () => {
+    const r = await request('POST', `/api/status/${statusId}/reply`, { content: '¡Se ve genial!' }, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 51: Get user statuses
-  await runTest('GET /api/status/user/:userId - Get user statuses', async () => {
-    const res = await request('GET', `/api/status/user/${userId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.statuses));
+  await test('Eliminar estado', async () => {
+    const r = await request('DELETE', `/api/status/${statusId}`, null, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 52: Delete own status
-  await runTest('DELETE /api/status/:statusId - Delete own status', async () => {
-    const res = await request('DELETE', `/api/status/${statusId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
+  // ==========================================
+  // SEARCH
+  // ==========================================
+  console.log('\n📦 MÓDULO: BÚSQUEDA');
+  console.log('-'.repeat(40));
+
+  await test('Buscar usuarios por nombre', async () => {
+    const r = await request('GET', '/api/search/users?q=mar', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.users.length > 0);
+    console.log(`     → ${r.data.data.users.length} usuarios encontrados`);
   });
 
-  // Test 53: View non-existent status
-  await runTest('POST /api/status/:statusId/view - Reject non-existent status', async () => {
-    const res = await request('POST', '/api/status/nonexistent/view', {}, userToken);
-    assert.strictEqual(res.status, 404);
+  await test('Buscar por username', async () => {
+    const r = await request('GET', '/api/search/users?q=carlos', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.users.length > 0);
   });
 
-  // ==================== COMMUNITY TESTS ====================
-  console.log('\n📋 Community Tests:');
+  await test('Buscar mensajes', async () => {
+    const r = await request('GET', '/api/search/messages?q=Civis', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.messages.length > 0);
+    console.log(`     → ${r.data.data.messages.length} mensajes encontrados`);
+  });
 
-  // Test 54: Create community
+  await test('Búsqueda global', async () => {
+    const r = await request('GET', '/api/search/global?q=Juan', null, mariaToken);
+    assert(r.data.success);
+  });
+
+  await test('Búsqueda corta rechazada (< 2 chars)', async () => {
+    const r = await request('GET', '/api/search/users?q=a', null, juanToken);
+    assert(r.status === 400);
+  });
+
+  // ==========================================
+  // COMMUNITIES
+  // ==========================================
+  console.log('\n📦 MÓDULO: COMUNIDADES');
+  console.log('-'.repeat(40));
+
   let communityId;
-  await runTest('POST /api/communities/ - Create community', async () => {
-    const res = await request('POST', '/api/communities/', {
-      name: 'Test Community',
-      description: 'A test community for testing'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.community);
-    assert.strictEqual(res.body.community.name, 'Test Community');
-    communityId = res.body.community.id;
+  await test('Listar comunidades', async () => {
+    const r = await request('GET', '/api/communities', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.communities.length > 0);
+    console.log(`     → ${r.data.data.communities.length} comunidades`);
+    communityId = r.data.data.communities[0].id;
   });
 
-  // Test 55: Create community without name
-  await runTest('POST /api/communities/ - Reject community without name', async () => {
-    const res = await request('POST', '/api/communities/', {
-      description: 'No name community'
-    }, userToken);
-    assert.strictEqual(res.status, 400);
+  let generalChannelId;
+  await test('Detalle de comunidad con canales y miembros', async () => {
+    const r = await request('GET', `/api/communities/${communityId}`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.channels.length > 0);
+    assert(r.data.data.members.length > 0);
+    console.log(`     → ${r.data.data.community.name}: ${r.data.data.channels.length} canales, ${r.data.data.members.length} miembros`);
+    generalChannelId = r.data.data.channels.find(c => c.is_default_channel)?.id;
   });
 
-  // Test 56: List communities
-  await runTest('GET /api/communities/ - List user communities', async () => {
-    const res = await request('GET', '/api/communities/', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.communities));
+  await test('Crear nueva comunidad', async () => {
+    const r = await request('POST', '/api/communities', {
+      name: '🧪 Comunidad de Pruebas',
+      description: 'Para probar comunidades',
+      is_public: true
+    }, mariaToken);
+    assert(r.data.success);
+    assert(r.data.data.general_channel_id);
   });
 
-  // Test 57: Discover communities
-  await runTest('GET /api/communities/discover - Discover communities', async () => {
-    const res = await request('GET', '/api/communities/discover', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.communities));
+  let newComId;
+  await test('Crear canal de anuncios', async () => {
+    const coms = await request('GET', '/api/communities', null, mariaToken);
+    newComId = coms.data.data.communities.find(c => c.name.includes('Pruebas'))?.id;
+    assert(newComId);
+
+    const r = await request('POST', `/api/communities/${newComId}/channels`, {
+      name: '📢 Anuncios',
+      channel_type: 'announcement'
+    }, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 58: Get community details
-  await runTest('GET /api/communities/:communityId - Get community details', async () => {
-    const res = await request('GET', `/api/communities/${communityId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(res.body.community);
-    assert.ok(Array.isArray(res.body.channels));
+  await test('Invitar a comunidad', async () => {
+    const r = await request('POST', `/api/communities/${newComId}/invite`, { user_ids: [juanId] }, mariaToken);
+    assert(r.data.success);
   });
 
-  // Test 59: Update community
-  await runTest('PUT /api/communities/:communityId - Update community', async () => {
-    const res = await request('PUT', `/api/communities/${communityId}`, {
-      name: 'Updated Test Community',
-      description: 'Updated description'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.community.name, 'Updated Test Community');
+  await test('Enviar mensaje a canal', async () => {
+    const detail = await request('GET', `/api/communities/${communityId}`, null, juanToken);
+    const gCh = detail.data.data.channels.find(c => c.is_default_channel);
+    assert(gCh);
+
+    const r = await request('POST', `/api/communities/${communityId}/channels/${gCh.id}/messages`, {
+      content: '¡Mensaje de prueba desde tests! 🧪',
+      message_type: 'text'
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 60: Get community members
-  await runTest('GET /api/communities/:communityId/members - List members', async () => {
-    const res = await request('GET', `/api/communities/${communityId}/members`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.members));
+  await test('Obtener mensajes del canal', async () => {
+    const detail = await request('GET', `/api/communities/${communityId}`, null, juanToken);
+    const gCh = detail.data.data.channels.find(c => c.is_default_channel);
+    const r = await request('GET', `/api/communities/${communityId}/channels/${gCh.id}/messages`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.messages.length > 0);
+    console.log(`     → ${r.data.data.messages.length} mensajes en canal`);
   });
 
-  // Test 61: Create channel
-  let channelId;
-  await runTest('POST /api/communities/:communityId/channels - Create channel', async () => {
-    const res = await request('POST', `/api/communities/${communityId}/channels`, {
-      name: 'general',
-      description: 'General discussion',
-      type: 'text'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.channel);
-    assert.strictEqual(res.body.channel.name, 'general');
-    channelId = res.body.channel.id;
+  await test('Fijar mensaje en canal', async () => {
+    const detail = await request('GET', `/api/communities/${communityId}`, null, juanToken);
+    const gCh = detail.data.data.channels.find(c => c.is_default_channel);
+    const msgs = await request('GET', `/api/communities/${communityId}/channels/${gCh.id}/messages`, null, juanToken);
+    const lastMsg = msgs.data.data.messages[msgs.data.data.messages.length - 1];
+
+    const r = await request('PUT', `/api/communities/${communityId}/channels/${gCh.id}/messages/${lastMsg.id}/pin`, { is_pinned: true }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 62: List channels
-  await runTest('GET /api/communities/:communityId/channels - List channels', async () => {
-    const res = await request('GET', `/api/communities/${communityId}/channels`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.channels));
+  await test('Descubrir comunidades públicas', async () => {
+    const r = await request('GET', '/api/communities/discover', null, carlosToken);
+    assert(r.data.success);
   });
 
-  // Test 63: Update channel
-  await runTest('PUT /api/communities/:communityId/channels/:channelId - Update channel', async () => {
-    const res = await request('PUT', `/api/communities/${communityId}/channels/${channelId}`, {
-      name: 'general-updated',
-      description: 'Updated general channel'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.channel.name, 'general-updated');
+  await test('Editar comunidad', async () => {
+    const coms = await request('GET', '/api/communities', null, juanToken);
+    const ownCom = coms.data.data.communities.find(c => c.my_role === 'owner');
+    if (!ownCom) { console.log('     ⚠️  Sin comunidad own'); return; }
+    const r = await request('PUT', `/api/communities/${ownCom.id}`, { description: 'Actualizado por tests' }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 64: Send channel message
-  await runTest('POST /api/communities/:communityId/channels/:channelId/messages - Send channel message', async () => {
-    const res = await request('POST', `/api/communities/${communityId}/channels/${channelId}/messages`, {
-      content: 'Hello channel!'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.message);
+  await test('Cambiar rol de miembro', async () => {
+    const coms = await request('GET', '/api/communities', null, juanToken);
+    const ownCom = coms.data.data.communities.find(c => c.my_role === 'owner');
+    if (!ownCom) { console.log('     ⚠️  Sin comunidad own'); return; }
+    const detail = await request('GET', `/api/communities/${ownCom.id}`, null, juanToken);
+    const member = detail.data.data.members.find(m => m.role === 'member');
+    if (!member) { console.log('     ⚠️  Sin miembros'); return; }
+    const r = await request('PUT', `/api/communities/${ownCom.id}/members/${member.user_id}/role`, { role: 'moderator' }, juanToken);
+    assert(r.data.success);
   });
 
-  // Test 65: Get channel messages
-  await runTest('GET /api/communities/:communityId/channels/:channelId/messages - Get channel messages', async () => {
-    const res = await request('GET', `/api/communities/${communityId}/channels/${channelId}/messages`, null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.messages));
-  });
+  // ==========================================
+  // CALLS (VIDEOLLAMADAS)
+  // ==========================================
+  console.log('\n📦 MÓDULO: VIDEOLLAMADAS');
+  console.log('-'.repeat(40));
 
-  // Test 66: Join community (as Maria)
-  await runTest('POST /api/communities/:communityId/join - Join community', async () => {
-    const mariaLoginRes = await request('POST', '/api/auth/login', { email: 'maria@civis.com', password: 'password123' });
-    const mariaToken = mariaLoginRes.body.token;
-
-    const res = await request('POST', `/api/communities/${communityId}/join`, {}, mariaToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // Test 67: Leave community
-  await runTest('POST /api/communities/:communityId/leave - Leave community', async () => {
-    const mariaLoginRes = await request('POST', '/api/auth/login', { email: 'maria@civis.com', password: 'password123' });
-    const mariaToken = mariaLoginRes.body.token;
-
-    const res = await request('POST', `/api/communities/${communityId}/leave`, {}, mariaToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // Test 68: Delete channel
-  await runTest('DELETE /api/communities/:communityId/channels/:channelId - Delete channel', async () => {
-    const res = await request('DELETE', `/api/communities/${communityId}/channels/${channelId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // Test 69: Delete community
-  await runTest('DELETE /api/communities/:communityId - Delete community', async () => {
-    const res = await request('DELETE', `/api/communities/${communityId}`, null, userToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // Test 70: Get non-existent community
-  await runTest('GET /api/communities/:communityId - Reject non-existent community', async () => {
-    const res = await request('GET', '/api/communities/nonexistent', null, userToken);
-    assert.strictEqual(res.status, 404);
-  });
-
-  // ==================== CALL TESTS ====================
-  console.log('\n📋 Call Tests:');
-
-  // Test 71: Initiate private call
   let callId;
-  await runTest('POST /api/calls/initiate - Initiate private call', async () => {
-    const res = await request('POST', '/api/calls/initiate', {
-      receiver_id: mariaId,
-      type: 'private'
-    }, userToken);
-    assert.strictEqual(res.status, 201);
-    assert.ok(res.body.call);
-    assert.strictEqual(res.body.call.status, 'ringing');
-    callId = res.body.call.id;
+  await test('Iniciar videollamada privada', async () => {
+    const r = await request('POST', '/api/calls', {
+      target_user_id: mariaId,
+      call_type: 'video'
+    }, juanToken);
+    assert(r.data.success);
+    callId = r.data.data.call_id;
+    assert(r.data.data.call_mode === 'private');
   });
 
-  // Test 72: Answer call
-  await runTest('POST /api/calls/:callId/answer - Answer call', async () => {
-    const res = await request('POST', `/api/calls/${callId}/answer`, {}, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.call.status, 'ongoing');
+  await test('Info de llamada', async () => {
+    const r = await request('GET', `/api/calls/${callId}`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.call.status === 'ringing');
+    assert(r.data.data.participants.length === 2);
   });
 
-  // Test 73: End call
-  await runTest('POST /api/calls/:callId/end - End call', async () => {
-    const res = await request('POST', `/api/calls/${callId}/end`, {
-      duration: 120
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.call.status, 'ended');
-    assert.strictEqual(res.body.call.duration, 120);
+  await test('Contestar llamada', async () => {
+    const r = await request('PUT', `/api/calls/${callId}/answer`, null, mariaToken);
+    assert(r.data.success);
+    assert(r.data.data.status === 'connected');
   });
 
-  // Test 74: Initiate call without receiver
-  await runTest('POST /api/calls/initiate - Reject private call without receiver', async () => {
-    const res = await request('POST', '/api/calls/initiate', {
-      type: 'private'
-    }, userToken);
-    assert.strictEqual(res.status, 400);
+  await test('Enviar señal WebRTC (offer)', async () => {
+    const r = await request('POST', `/api/calls/${callId}/signal`, {
+      signal_type: 'offer', target_id: mariaId,
+      sdp: JSON.stringify({ type: 'offer', sdp: 'mock-sdp' })
+    }, juanToken);
+    assert(r.data.success);
   });
 
-  // Initiate another call for further tests
-  let callId2;
-  {
-    const callRes = await request('POST', '/api/calls/initiate', { receiver_id: mariaId, type: 'private' }, userToken);
-    callId2 = callRes.body.call.id;
+  await test('Enviar señal WebRTC (answer)', async () => {
+    const r = await request('POST', `/api/calls/${callId}/signal`, {
+      signal_type: 'answer', target_id: juanId,
+      sdp: JSON.stringify({ type: 'answer', sdp: 'mock-sdp' })
+    }, mariaToken);
+    assert(r.data.success);
+  });
+
+  await test('Enviar señal ICE candidate', async () => {
+    const r = await request('POST', `/api/calls/${callId}/signal`, {
+      signal_type: 'ice-candidate', target_id: juanId,
+      candidate: JSON.stringify({ candidate: 'mock-candidate' })
+    }, mariaToken);
+    assert(r.data.success);
+  });
+
+  await test('Obtener señales pendientes', async () => {
+    const r = await request('GET', `/api/calls/${callId}/signals`, null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.signals.length > 0);
+    console.log(`     → ${r.data.data.signals.length} señales`);
+  });
+
+  await test('Terminar videollamada', async () => {
+    const r = await request('PUT', `/api/calls/${callId}/end`, { duration: 120 }, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.status === 'ended');
+  });
+
+  await test('Llamada de audio', async () => {
+    const r = await request('POST', '/api/calls', {
+      target_user_id: mariaId, call_type: 'audio'
+    }, juanToken);
+    assert(r.data.success);
+    await request('PUT', `/api/calls/${r.data.data.call_id}/end`, null, juanToken);
+  });
+
+  await test('Rechazar llamada', async () => {
+    const r = await request('POST', '/api/calls', {
+      target_user_id: mariaId, call_type: 'video'
+    }, juanToken);
+    assert(r.data.success);
+    const rej = await request('PUT', `/api/calls/${r.data.data.call_id}/reject`, null, mariaToken);
+    assert(rej.data.success);
+  });
+
+  await test('No llamarse a sí mismo', async () => {
+    const r = await request('POST', '/api/calls', {
+      target_user_id: juanId, call_type: 'video'
+    }, juanToken);
+    assert(r.status === 400);
+  });
+
+  await test('No llamada duplicada', async () => {
+    const r1 = await request('POST', '/api/calls', {
+      target_user_id: mariaId, call_type: 'video'
+    }, juanToken);
+    assert(r1.data.success);
+    const r2 = await request('POST', '/api/calls', {
+      target_user_id: mariaId, call_type: 'video'
+    }, juanToken);
+    assert(r2.status === 409);
+    await request('PUT', `/api/calls/${r1.data.data.call_id}/end`, null, juanToken);
+  });
+
+  await test('Historial de llamadas', async () => {
+    const r = await request('GET', '/api/calls/history/list', null, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.calls.length > 0);
+    console.log(`     → ${r.data.data.calls.length} llamadas en historial`);
+  });
+
+  await test('Llamada grupal (canal de voz)', async () => {
+    const comDetail = await request('GET', `/api/communities/${communityId}`, null, juanToken);
+    const voiceCh = comDetail.data.data.channels.find(c => c.channel_type === 'voice');
+    if (!voiceCh) { console.log('     ⚠️  Sin canal de voz'); return; }
+
+    const r = await request('POST', '/api/calls', {
+      channel_id: voiceCh.id, call_type: 'audio'
+    }, juanToken);
+    assert(r.data.success);
+    assert(r.data.data.call_mode === 'group');
+    await request('PUT', `/api/calls/${r.data.data.call_id}/end`, null, juanToken);
+  });
+
+  // ==========================================
+  // RESULTS
+  // ==========================================
+  console.log('\n' + '='.repeat(60));
+  const total = passed + failed;
+  const pct = ((passed / total) * 100).toFixed(1);
+  
+  if (failed === 0) {
+    console.log(`  🎉 ¡TODAS LAS PRUEBAS PASARON! (${passed}/${total})`);
+  } else {
+    console.log(`  📊 RESULTADOS: ${passed} PASADOS, ${failed} FALLIDOS de ${total} (${pct}%)`);
+    if (errors.length > 0) {
+      console.log('\n  Errores:');
+      errors.forEach(e => console.log(`    • ${e.name}: ${e.error}`));
+    }
   }
-
-  // Test 75: Call signal
-  await runTest('POST /api/calls/:callId/signal - Send call signal', async () => {
-    const res = await request('POST', `/api/calls/${callId2}/signal`, {
-      signal_type: 'offer',
-      signal_data: '{"sdp":"test-sdp"}'
-    }, userToken);
-    assert.strictEqual(res.status, 200);
-  });
-
-  // Test 76: Get call history
-  await runTest('GET /api/calls/history - Get call history', async () => {
-    const res = await request('GET', '/api/calls/history', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.calls));
-    assert.ok(res.body.calls.length >= 2);
-  });
-
-  // ==================== SEARCH TESTS ====================
-  console.log('\n📋 Search Tests:');
-
-  // Test 77: Global search
-  await runTest('GET /api/search/global?q=Carlos - Global search', async () => {
-    const res = await request('GET', '/api/search/global?q=Carlos', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.users));
-    assert.ok(res.body.users.length > 0);
-  });
-
-  // Test 78: Search users
-  await runTest('GET /api/search/users?q=María - Search users', async () => {
-    const res = await request('GET', '/api/search/users?q=María', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.users));
-  });
-
-  // Test 79: Search messages
-  await runTest('GET /api/search/messages?q=test - Search messages', async () => {
-    const res = await request('GET', '/api/search/messages?q=test', null, userToken);
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.messages));
-  });
-
-  // Test 80: Search without query
-  await runTest('GET /api/search/global - Reject search without query', async () => {
-    const res = await request('GET', '/api/search/global', null, userToken);
-    assert.strictEqual(res.status, 400);
-  });
-
-  // ==================== SUMMARY ====================
-  console.log('\n' + '='.repeat(50));
-  console.log(`\n📊 Test Results: ${passed} PASSED, ${failed} FAILED out of ${passed + failed} total\n`);
-
-  if (failed > 0) {
-    console.log('Failed tests:');
-    testResults.filter(t => t.status === 'FAILED').forEach(t => {
-      console.log(`  ❌ ${t.name}: ${t.error}`);
-    });
-    console.log('');
-  }
+  console.log('='.repeat(60) + '\n');
 
   // Cleanup
-  serverProcess.kill();
-  console.log('Server stopped.');
-  console.log('='.repeat(50));
-
+  if (serverProcess) serverProcess.kill();
+  
   process.exit(failed > 0 ? 1 : 0);
 }
 
 main().catch(err => {
-  console.error('Test runner error:', err);
+  console.error('❌ Error fatal:', err);
   if (serverProcess) serverProcess.kill();
   process.exit(1);
 });

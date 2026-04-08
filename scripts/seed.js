@@ -1,423 +1,646 @@
+/**
+ * Script de seed para Civis
+ * Crea usuarios de prueba para probar el servidor
+ */
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
-
-// Use a fresh database for seeding
 const Database = require('better-sqlite3');
-const dbPath = path.join(__dirname, '..', 'data', 'civis.db');
 
-// Remove existing DB
-const fs = require('fs');
-if (fs.existsSync(dbPath)) {
-  fs.unlinkSync(dbPath);
-  console.log('Removed existing database.');
-}
+const DB_PATH = path.join(__dirname, '..', 'data', 'civis.db');
 
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
+async function seed() {
+  console.log('🌱 Iniciando seed de datos de prueba...\n');
 
-// Create tables (same as config/database.js)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    name TEXT NOT NULL,
-    phone TEXT,
-    avatar TEXT,
-    bio TEXT,
-    privacy_settings TEXT DEFAULT '{}',
-    online INTEGER DEFAULT 0,
-    last_seen TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  );
+  // Ensure data directory exists
+  const fs = require('fs');
+  const dir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 
-  CREATE TABLE IF NOT EXISTS contacts (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    contact_id TEXT NOT NULL,
-    nickname TEXT,
-    blocked INTEGER DEFAULT 0,
-    muted INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(user_id, contact_id)
-  );
+  const db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
 
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    sender_id TEXT NOT NULL,
-    receiver_id TEXT,
-    group_id TEXT,
-    content TEXT,
-    message_type TEXT DEFAULT 'text',
-    media_url TEXT,
-    location_lat REAL,
-    location_lng REAL,
-    reply_to TEXT,
-    forwarded INTEGER DEFAULT 0,
-    read INTEGER DEFAULT 0,
-    deleted INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  // Crear tablas si no existen
+  console.log('📊 Creando tablas...');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
+      phone TEXT UNIQUE, username TEXT UNIQUE, display_name TEXT NOT NULL DEFAULT '',
+      avatar TEXT DEFAULT NULL, about TEXT DEFAULT '¡Hola! Estoy usando Civis',
+      privacy_profile_photo INTEGER DEFAULT 0, privacy_about INTEGER DEFAULT 0,
+      privacy_last_seen INTEGER DEFAULT 0, privacy_status INTEGER DEFAULT 0,
+      is_online INTEGER DEFAULT 0, last_seen TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS contacts (
+      user_id TEXT NOT NULL, contact_id TEXT NOT NULL, nickname TEXT DEFAULT NULL,
+      blocked INTEGER DEFAULT 0, muted INTEGER DEFAULT 0,
+      added_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, contact_id), CHECK (user_id != contact_id)
+    );
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY, user1_id TEXT NOT NULL, user2_id TEXT NOT NULL,
+      last_message_id TEXT DEFAULT NULL, last_message_preview TEXT DEFAULT NULL,
+      last_message_type TEXT DEFAULT 'text', last_message_sender_id TEXT DEFAULT NULL,
+      last_message_at TEXT DEFAULT NULL, unread_count_user1 INTEGER DEFAULT 0,
+      unread_count_user2 INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (user1_id, user2_id), CHECK (user1_id != user2_id)
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+      content TEXT DEFAULT NULL, message_type TEXT DEFAULT 'text',
+      media_url TEXT DEFAULT NULL, media_mime_type TEXT DEFAULT NULL,
+      media_size INTEGER DEFAULT 0, media_width INTEGER DEFAULT 0,
+      media_height INTEGER DEFAULT 0, media_duration INTEGER DEFAULT 0,
+      media_thumbnail TEXT DEFAULT NULL, file_name TEXT DEFAULT NULL,
+      caption TEXT DEFAULT NULL, latitude REAL DEFAULT NULL, longitude REAL DEFAULT NULL,
+      location_name TEXT DEFAULT NULL, forwarded INTEGER DEFAULT 0,
+      replied_to_id TEXT DEFAULT NULL, status TEXT DEFAULT 'sent',
+      is_deleted INTEGER DEFAULT 0, deleted_for TEXT DEFAULT NULL,
+      deleted_at TEXT DEFAULT NULL, created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS message_reads (
+      message_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      read_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (message_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT NULL,
+      avatar TEXT DEFAULT NULL, created_by TEXT NOT NULL,
+      is_restricted INTEGER DEFAULT 0, max_members INTEGER DEFAULT 1024,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT DEFAULT 'member',
+      nickname TEXT DEFAULT NULL, muted INTEGER DEFAULT 0,
+      joined_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (group_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS group_messages (
+      id TEXT PRIMARY KEY, group_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+      content TEXT DEFAULT NULL, message_type TEXT DEFAULT 'text',
+      media_url TEXT DEFAULT NULL, media_mime_type TEXT DEFAULT NULL,
+      media_size INTEGER DEFAULT 0, media_width INTEGER DEFAULT 0,
+      media_height INTEGER DEFAULT 0, media_duration INTEGER DEFAULT 0,
+      media_thumbnail TEXT DEFAULT NULL, file_name TEXT DEFAULT NULL,
+      caption TEXT DEFAULT NULL, forwarded INTEGER DEFAULT 0,
+      replied_to_id TEXT DEFAULT NULL, is_deleted INTEGER DEFAULT 0,
+      deleted_for TEXT DEFAULT NULL, deleted_at TEXT DEFAULT NULL,
+      sender_deleted INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS group_message_reads (
+      message_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      read_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (message_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS user_status (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      content_type TEXT DEFAULT 'text', content TEXT DEFAULT NULL,
+      background_color TEXT DEFAULT '#1DA1F2', media_url TEXT DEFAULT NULL,
+      media_thumbnail TEXT DEFAULT NULL, font_type TEXT DEFAULT 'default',
+      views_count INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT DEFAULT (datetime('now', '+24 hours'))
+    );
+    CREATE TABLE IF NOT EXISTS status_views (
+      status_id TEXT NOT NULL, viewer_id TEXT NOT NULL,
+      viewed_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (status_id, viewer_id)
+    );
+    CREATE TABLE IF NOT EXISTS status_replies (
+      id TEXT PRIMARY KEY, status_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+      content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS communities (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT NULL,
+      avatar TEXT DEFAULT NULL, cover_image TEXT DEFAULT NULL, created_by TEXT NOT NULL,
+      is_public INTEGER DEFAULT 0, approve_members INTEGER DEFAULT 0, max_members INTEGER DEFAULT 50000,
+      allow_member_invite INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS community_members (
+      community_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT DEFAULT 'member',
+      muted INTEGER DEFAULT 0, joined_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (community_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS community_roles (
+      id TEXT PRIMARY KEY, community_id TEXT NOT NULL, name TEXT NOT NULL,
+      color TEXT DEFAULT '#1DA1F2', permissions TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS channels (
+      id TEXT PRIMARY KEY, community_id TEXT NOT NULL, name TEXT NOT NULL,
+      description TEXT DEFAULT NULL, channel_type TEXT DEFAULT 'text',
+      sort_order INTEGER DEFAULT 0, is_default INTEGER DEFAULT 0, created_by TEXT NOT NULL,
+      last_message_preview TEXT DEFAULT NULL, last_message_type TEXT DEFAULT 'text',
+      last_message_sender_id TEXT DEFAULT NULL, last_message_at TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS channel_members (
+      channel_id TEXT NOT NULL, user_id TEXT NOT NULL, unread_count INTEGER DEFAULT 0,
+      joined_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (channel_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS channel_messages (
+      id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+      content TEXT DEFAULT NULL, message_type TEXT DEFAULT 'text',
+      media_url TEXT DEFAULT NULL, media_mime_type TEXT DEFAULT NULL,
+      media_size INTEGER DEFAULT 0, media_width INTEGER DEFAULT 0, media_height INTEGER DEFAULT 0,
+      media_duration INTEGER DEFAULT 0, media_thumbnail TEXT DEFAULT NULL,
+      file_name TEXT DEFAULT NULL, caption TEXT DEFAULT NULL, forwarded INTEGER DEFAULT 0,
+      replied_to_id TEXT DEFAULT NULL, is_pinned INTEGER DEFAULT 0, is_deleted INTEGER DEFAULT 0,
+      deleted_for TEXT DEFAULT NULL, deleted_at TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS channel_message_reads (
+      message_id TEXT NOT NULL, user_id TEXT NOT NULL, read_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (message_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS community_join_requests (
+      id TEXT PRIMARY KEY, community_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      message TEXT DEFAULT NULL, status TEXT DEFAULT 'pending', reviewed_by TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now')), reviewed_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS calls (
+      id TEXT PRIMARY KEY, call_type TEXT NOT NULL, call_mode TEXT DEFAULT 'private',
+      caller_id TEXT NOT NULL, status TEXT DEFAULT 'ringing', started_at TEXT,
+      ended_at TEXT DEFAULT NULL, duration INTEGER DEFAULT 0,
+      community_id TEXT DEFAULT NULL, channel_id TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS call_participants (
+      call_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT DEFAULT 'participant',
+      joined_at TEXT DEFAULT (datetime('now')), left_at TEXT DEFAULT NULL,
+      PRIMARY KEY (call_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS call_signals (
+      id TEXT PRIMARY KEY, call_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+      target_id TEXT DEFAULT NULL, signal_type TEXT NOT NULL, sdp TEXT DEFAULT NULL,
+      candidate TEXT DEFAULT NULL, created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT DEFAULT (datetime('now', '+60 seconds'))
+    );
+  `);
+  console.log('  ✅ Tablas creadas');
 
-  CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY,
-    type TEXT DEFAULT 'private',
-    name TEXT,
-    avatar TEXT,
-    created_by TEXT,
-    last_message TEXT,
-    last_message_time TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  // Limpiar datos existentes
+  console.log('🧹 Limpiando datos existentes...');
+  db.exec(`
+    DELETE FROM call_signals;
+    DELETE FROM call_participants;
+    DELETE FROM calls;
+    DELETE FROM community_join_requests;
+    DELETE FROM channel_message_reads;
+    DELETE FROM channel_messages;
+    DELETE FROM channel_members;
+    DELETE FROM channels;
+    DELETE FROM community_roles;
+    DELETE FROM community_members;
+    DELETE FROM communities;
+    DELETE FROM status_replies;
+    DELETE FROM status_views;
+    DELETE FROM user_status;
+    DELETE FROM group_message_reads;
+    DELETE FROM group_messages;
+    DELETE FROM group_members;
+    DELETE FROM groups;
+    DELETE FROM message_reads;
+    DELETE FROM messages;
+    DELETE FROM conversations;
+    DELETE FROM contacts;
+    DELETE FROM users;
+  `);
 
-  CREATE TABLE IF NOT EXISTS conversation_participants (
-    conversation_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    joined_at TEXT DEFAULT (datetime('now')),
-    last_read_message_id TEXT,
-    muted INTEGER DEFAULT 0,
-    role TEXT DEFAULT 'member',
-    PRIMARY KEY (conversation_id, user_id)
-  );
+  // =============================================
+  // CREAR USUARIOS DE PRUEBA
+  // =============================================
+  console.log('👥 Creando usuarios de prueba...');
 
-  CREATE TABLE IF NOT EXISTS groups (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    avatar TEXT,
-    created_by TEXT NOT NULL,
-    settings TEXT DEFAULT '{"restricted":false}',
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  const saltRounds = 12;
+  const users = [
+    {
+      id: uuidv4(),
+      email: 'juan.perez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Juan Pérez',
+      username: 'juanperez',
+      phone: '+52 555 1001',
+      about: '¡Hola! Soy Juan, desarrollador full-stack 🚀'
+    },
+    {
+      id: uuidv4(),
+      email: 'maria.garcia@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'María García',
+      username: 'mariagarcia',
+      phone: '+52 555 1002',
+      about: 'Diseñadora UX/UI | Amante del café ☕'
+    },
+    {
+      id: uuidv4(),
+      email: 'carlos.lopez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Carlos López',
+      username: 'carloslopez',
+      phone: '+52 555 1003',
+      about: '🎵 Músico | 🎸 Guitarrista | Civis fan'
+    },
+    {
+      id: uuidv4(),
+      email: 'ana.martinez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Ana Martínez',
+      username: 'anamartinez',
+      phone: '+52 555 1004',
+      about: '📸 Fotógrafa | Viajera incansable ✈️'
+    },
+    {
+      id: uuidv4(),
+      email: 'pedro.sanchez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Pedro Sánchez',
+      username: 'pedrosanchez',
+      phone: '+52 555 1005',
+      about: '🍳 Chef | Comida mexicana 🌮'
+    },
+    {
+      id: uuidv4(),
+      email: 'laura.torres@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Laura Torres',
+      username: 'lauratorres',
+      phone: '+52 555 1006',
+      about: '📚 Medico | Vida sana y fitness 💪'
+    },
+    {
+      id: uuidv4(),
+      email: 'diego.ramirez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Diego Ramírez',
+      username: 'diegoramirez',
+      phone: '+52 555 1007',
+      about: '🎮 Gamer | Desarrollador de videojuegos'
+    },
+    {
+      id: uuidv4(),
+      email: 'sofia.hernandez@civis.app',
+      password: await bcrypt.hash('123456', saltRounds),
+      display_name: 'Sofía Hernández',
+      username: 'sofiahernandez',
+      phone: '+52 555 1008',
+      about: '🎨 Artista digital | Creatividad sin límites'
+    }
+  ];
 
-  CREATE TABLE IF NOT EXISTS group_members (
-    group_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    role TEXT DEFAULT 'member',
-    muted INTEGER DEFAULT 0,
-    added_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (group_id, user_id)
-  );
+  const insertUser = db.prepare(`
+    INSERT INTO users (id, email, password, display_name, username, phone, about)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
 
-  CREATE TABLE IF NOT EXISTS statuses (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    type TEXT DEFAULT 'text',
-    content TEXT NOT NULL,
-    media_url TEXT,
-    background_color TEXT,
-    viewers TEXT DEFAULT '[]',
-    replies TEXT DEFAULT '[]',
-    expires_at TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  for (const user of users) {
+    insertUser.run(user.id, user.email, user.password, user.display_name, user.username, user.phone, user.about);
+  }
 
-  CREATE TABLE IF NOT EXISTS communities (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    avatar TEXT,
-    cover TEXT,
-    created_by TEXT NOT NULL,
-    settings TEXT DEFAULT '{"join_approval":false}',
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  console.log(`  ✅ ${users.length} usuarios creados`);
 
-  CREATE TABLE IF NOT EXISTS community_members (
-    community_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    role TEXT DEFAULT 'member',
-    joined_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (community_id, user_id)
-  );
+  // =============================================
+  // CREAR CONTACTOS (red social entre usuarios)
+  // =============================================
+  console.log('🤝 Creando contactos...');
 
-  CREATE TABLE IF NOT EXISTS community_channels (
-    id TEXT PRIMARY KEY,
-    community_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    type TEXT DEFAULT 'text',
-    created_by TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  const insertContact = db.prepare(`
+    INSERT INTO contacts (user_id, contact_id) VALUES (?, ?)
+  `);
 
-  CREATE TABLE IF NOT EXISTS channel_messages (
-    id TEXT PRIMARY KEY,
-    channel_id TEXT NOT NULL,
-    sender_id TEXT NOT NULL,
-    content TEXT,
-    message_type TEXT DEFAULT 'text',
-    media_url TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  // Juan es contacto de todos
+  for (let i = 1; i < users.length; i++) {
+    insertContact.run(users[0].id, users[i].id);
+    insertContact.run(users[i].id, users[0].id);
+  }
 
-  CREATE TABLE IF NOT EXISTS calls (
-    id TEXT PRIMARY KEY,
-    type TEXT DEFAULT 'private',
-    caller_id TEXT NOT NULL,
-    receiver_id TEXT,
-    group_id TEXT,
-    status TEXT DEFAULT 'ringing',
-    started_at TEXT DEFAULT (datetime('now')),
-    ended_at TEXT,
-    duration INTEGER DEFAULT 0
-  );
+  // María es contacto de Ana, Laura y Sofía
+  const mariaContacts = [3, 5, 7];
+  for (const idx of mariaContacts) {
+    insertContact.run(users[1].id, users[idx].id);
+    insertContact.run(users[idx].id, users[1].id);
+  }
 
-  CREATE TABLE IF NOT EXISTS call_participants (
-    call_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    joined_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (call_id, user_id)
-  );
+  // Carlos es contacto de Diego y Pedro
+  const carlosContacts = [4, 6];
+  for (const idx of carlosContacts) {
+    insertContact.run(users[2].id, users[idx].id);
+    insertContact.run(users[idx].id, users[2].id);
+  }
 
-  CREATE TABLE IF NOT EXISTS call_signals (
-    id TEXT PRIMARY KEY,
-    call_id TEXT NOT NULL,
-    sender_id TEXT NOT NULL,
-    signal_type TEXT NOT NULL,
-    signal_data TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  const contactCount = db.prepare('SELECT COUNT(*) as count FROM contacts').get().count;
+  console.log(`  ✅ ${contactCount} relaciones de contacto creadas`);
 
-  CREATE TABLE IF NOT EXISTS join_requests (
-    id TEXT PRIMARY KEY,
-    community_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+  // =============================================
+  // CREAR CONVERSACIONES CON MENSAJES
+  // =============================================
+  console.log('💬 Creando conversaciones y mensajes...');
 
-  CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-  CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id);
-  CREATE INDEX IF NOT EXISTS idx_messages_receiver_id ON messages(receiver_id);
-  CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id);
-  CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);
-  CREATE INDEX IF NOT EXISTS idx_contacts_contact_id ON contacts(contact_id);
-  CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members(group_id);
-  CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
-  CREATE INDEX IF NOT EXISTS idx_community_members_community_id ON community_members(community_id);
-  CREATE INDEX IF NOT EXISTS idx_community_members_user_id ON community_members(user_id);
-  CREATE INDEX IF NOT EXISTS idx_community_channels_community_id ON community_channels(community_id);
-  CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id ON channel_messages(channel_id);
-  CREATE INDEX IF NOT EXISTS idx_calls_caller_id ON calls(caller_id);
-  CREATE INDEX IF NOT EXISTS idx_calls_receiver_id ON calls(receiver_id);
-  CREATE INDEX IF NOT EXISTS idx_call_signals_call_id ON call_signals(call_id);
-  CREATE INDEX IF NOT EXISTS idx_statuses_user_id ON statuses(user_id);
-  CREATE INDEX IF NOT EXISTS idx_conversation_participants_user_id ON conversation_participants(user_id);
-  CREATE INDEX IF NOT EXISTS idx_conversation_participants_conversation_id ON conversation_participants(conversation_id);
-`);
+  const sampleMessages = [
+    '¡Hola! ¿Cómo estás? 😊',
+    'Todo bien, gracias. ¿Y tú?',
+    '¡Genial! ¿Viste el nuevo mensaje del equipo?',
+    'Sí, estamos en la fase de pruebas 🚀',
+    '¡Excelente noticia! Me alegra mucho',
+    '¿Nos vemos mañana para el café?',
+    '¡Claro! A las 10:00 en la oficina ☕',
+    'Perfecto, ahí estaré. ¿Traigo algo?',
+    'Si quieres unas galletas estaría genial 🍪',
+    '¡Hecho! Nos vemos luego',
+    '¿Puedes enviarme el documento por favor?',
+    'Claro, te lo envío ahora mismo',
+    '¡Gracias! Eres el mejor',
+    'De nada 😄 Para eso estamos',
+    'Oye, ¿viste la película que salió?',
+    'Sí, está increíble. Debes verla 🎬',
+  ];
 
-console.log('Database tables created.');
+  function createConversation(user1Id, user2Id, messageCount) {
+    const userIds = [user1Id, user2Id].sort();
+    const convId = uuidv4();
 
-// Create 8 test users
-const users = [
-  { email: 'carlos@civis.com', password: 'password123', name: 'Carlos Mendoza', phone: '+1-555-0101', bio: 'Developer & coffee lover' },
-  { email: 'maria@civis.com', password: 'password123', name: 'María García', phone: '+1-555-0102', bio: 'Designer & artist' },
-  { email: 'juan@civis.com', password: 'password123', name: 'Juan Pérez', phone: '+1-555-0103', bio: 'Musician & traveler' },
-  { email: 'ana@civis.com', password: 'password123', name: 'Ana Rodríguez', phone: '+1-555-0104', bio: 'Teacher & reader' },
-  { email: 'luis@civis.com', password: 'password123', name: 'Luis Fernández', phone: '+1-555-0105', bio: 'Engineer & gamer' },
-  { email: 'sofia@civis.com', password: 'password123', name: 'Sofía López', phone: '+1-555-0106', bio: 'Writer & photographer' },
-  { email: 'diego@civis.com', password: 'password123', name: 'Diego Martínez', phone: '+1-555-0107', bio: 'Chef & foodie' },
-  { email: 'valentina@civis.com', password: 'password123', name: 'Valentina Torres', phone: '+1-555-0108', bio: 'Doctor & athlete' }
-];
+    db.prepare('INSERT INTO conversations (id, user1_id, user2_id) VALUES (?, ?, ?)').run(convId, userIds[0], userIds[1]);
 
-const insertUser = db.prepare('INSERT INTO users (id, email, password, name, phone, bio) VALUES (?, ?, ?, ?, ?, ?)');
-const createdUsers = [];
+    const insertMsg = db.prepare(`
+      INSERT INTO messages (id, conversation_id, sender_id, content, status)
+      VALUES (?, ?, ?, ?, ?)
+    `);
 
-const seedUsers = db.transaction(() => {
-  users.forEach(u => {
-    const id = uuidv4();
-    const hashedPassword = bcrypt.hashSync(u.password, 10);
-    insertUser.run(id, u.email, hashedPassword, u.name, u.phone, u.bio);
-    createdUsers.push({ id, ...u });
-  });
-});
-seedUsers();
+    for (let i = 0; i < messageCount; i++) {
+      const msgId = uuidv4();
+      const sender = i % 2 === 0 ? user1Id : user2Id;
+      const content = sampleMessages[i % sampleMessages.length];
+      insertMsg.run(msgId, convId, sender, content, i < messageCount - 1 ? 'read' : 'delivered');
+    }
 
-console.log(`Created ${createdUsers.length} users.`);
+    // Actualizar último mensaje
+    const lastMsg = sampleMessages[(messageCount - 1) % sampleMessages.length];
+    const lastSender = (messageCount - 1) % 2 === 0 ? user1Id : user2Id;
+    db.prepare(`
+      UPDATE conversations SET 
+        last_message_preview = ?,
+        last_message_type = 'text',
+        last_message_sender_id = ?,
+        last_message_at = datetime('now', '-${messageCount} minutes')
+      WHERE id = ?
+    `).run(lastMsg.substring(0, 50), lastSender, convId);
 
-// Create contacts between all pairs
-const insertContact = db.prepare('INSERT OR IGNORE INTO contacts (id, user_id, contact_id) VALUES (?, ?, ?)');
-const seedContacts = db.transaction(() => {
-  for (let i = 0; i < createdUsers.length; i++) {
-    for (let j = i + 1; j < createdUsers.length; j++) {
-      const id1 = uuidv4();
-      const id2 = uuidv4();
-      insertContact.run(id1, createdUsers[i].id, createdUsers[j].id);
-      insertContact.run(id2, createdUsers[j].id, createdUsers[i].id);
+    return convId;
+  }
+
+  // Conversación Juan - María (15 mensajes)
+  createConversation(users[0].id, users[1].id, 15);
+  // Conversación Juan - Carlos (8 mensajes)
+  createConversation(users[0].id, users[2].id, 8);
+  // Conversación Juan - Ana (12 mensajes)
+  createConversation(users[0].id, users[3].id, 12);
+  // Conversación María - Ana (6 mensajes)
+  createConversation(users[1].id, users[3].id, 6);
+  // Conversación Carlos - Diego (10 mensajes)
+  createConversation(users[2].id, users[6].id, 10);
+  // Conversación Ana - Sofía (5 mensajes)
+  createConversation(users[3].id, users[7].id, 5);
+  // Conversación Pedro - Laura (7 mensajes)
+  createConversation(users[4].id, users[5].id, 7);
+
+  const convCount = db.prepare('SELECT COUNT(*) as count FROM conversations').get().count;
+  const msgCount = db.prepare('SELECT COUNT(*) as count FROM messages').get().count;
+  console.log(`  ✅ ${convCount} conversaciones creadas con ${msgCount} mensajes`);
+
+  // =============================================
+  // CREAR GRUPOS
+  // =============================================
+  console.log('👥 Creando grupos...');
+
+  const groups = [
+    {
+      name: '🚀 Equipo Civis Dev',
+      description: 'Grupo de desarrollo del proyecto Civis',
+      created_by_idx: 0,
+      member_indices: [1, 2, 5, 6],
+      messages: [
+        { sender_idx: 0, content: '¡Bienvenidos al grupo de desarrollo de Civis! 🎉' },
+        { sender_idx: 1, content: '¡Genial! Estoy emocionada por el proyecto 💪' },
+        { sender_idx: 2, content: 'Yo me encargo de la parte de audio 🎵' },
+        { sender_idx: 5, content: 'Perfecto, yo puedo ayudar con la parte médica si se necesita integración' },
+        { sender_idx: 6, content: '¡Yo me apunto! Puedo hacer la parte de gaming 🎮' },
+        { sender_idx: 0, content: 'Excelente equipo. Empecemos esta semana con la fase 1' },
+      ]
+    },
+    {
+      name: '🎨 Amigos del Arte',
+      description: 'Compartimos arte y creatividad',
+      created_by_idx: 7,
+      member_indices: [1, 3, 4],
+      messages: [
+        { sender_idx: 7, content: '¡Hola a todos! Este grupo es para compartir arte 🎨' },
+        { sender_idx: 3, content: '¡Me encanta la idea! Acabo de tomar unas fotos increíbles 📸' },
+        { sender_idx: 1, content: 'Yo puedo compartir diseños que he hecho' },
+        { sender_idx: 4, content: 'El arte culinario también cuenta, ¿verdad? 🍝' },
+      ]
+    },
+    {
+      name: '⚽ Liga Civis',
+      description: 'Organización de partidos de fútbol',
+      created_by_idx: 2,
+      member_indices: [0, 4, 6],
+      messages: [
+        { sender_idx: 2, content: '¿Quién va al partido de este sábado? ⚽' },
+        { sender_idx: 0, content: '¡Yo voy! Necesito práctica 😅' },
+        { sender_idx: 4, content: 'Cuenta conmigo. Haré los tacos para después 🌮' },
+        { sender_idx: 6, content: 'Vamos a ganar esta vez 🏆' },
+        { sender_idx: 2, content: 'Perfecto, nos vemos a las 10:00 en el campo' },
+      ]
+    }
+  ];
+
+  for (const groupData of groups) {
+    const groupId = uuidv4();
+    db.prepare(`
+      INSERT INTO groups (id, name, description, created_by) VALUES (?, ?, ?, ?)
+    `).run(groupId, groupData.name, groupData.description, users[groupData.created_by_idx].id);
+
+    // Creador como admin
+    db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)').run(groupId, users[groupData.created_by_idx].id, 'admin');
+
+    // Miembros
+    for (const idx of groupData.member_indices) {
+      db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)').run(groupId, users[idx].id, 'member');
+    }
+
+    // Mensajes del grupo
+    for (let i = 0; i < groupData.messages.length; i++) {
+      const msgData = groupData.messages[i];
+      const msgId = uuidv4();
+      db.prepare(`
+        INSERT INTO group_messages (id, group_id, sender_id, content)
+        VALUES (?, ?, ?, ?)
+      `).run(msgId, groupId, users[msgData.sender_idx].id, msgData.content);
+    }
+
+    db.prepare("UPDATE groups SET updated_at = datetime('now') WHERE id = ?").run(groupId);
+  }
+
+  const groupCount = db.prepare('SELECT COUNT(*) as count FROM groups').get().count;
+  const groupMsgCount = db.prepare('SELECT COUNT(*) as count FROM group_messages').get().count;
+  console.log(`  ✅ ${groupCount} grupos creados con ${groupMsgCount} mensajes`);
+
+  // =============================================
+  // CREAR COMUNIDADES Y CANALES
+  // =============================================
+  console.log('🏗️  Creando comunidades y canales...');
+
+  const communitiesData = [
+    {
+      name: '🌐 Civis Developer Hub',
+      description: 'Comunidad oficial de desarrolladores de Civis',
+      is_public: 1,
+      created_by_idx: 0,
+      member_indices: [1, 2, 5, 6, 7],
+      channels: [
+        { name: 'General', description: 'Discusión general', type: 'text', default: true, sort: 0 },
+        { name: '📢 Anuncios', description: 'Anuncios oficiales', type: 'announcement', default: false, sort: 1 },
+        { name: '🐛 Bugs', description: 'Reportar bugs', type: 'text', default: false, sort: 2 },
+        { name: '💡 Ideas', description: 'Propuestas de features', type: 'text', default: false, sort: 3 },
+        { name: '🎤 Voice Chat', description: 'Canal de voz', type: 'voice', default: false, sort: 4 },
+      ],
+      messages: [
+        { channel: 'General', sender: 0, content: '¡Bienvenidos a la comunidad de Civis Dev! 🎉' },
+        { channel: 'General', sender: 1, content: '¡Genial! Estoy emocionada de estar aquí' },
+        { channel: 'General', sender: 2, content: '¿Alguien ha probado la nueva feature de canales?' },
+        { channel: '📢 Anuncios', sender: 0, content: '📢 Nueva versión 2.0 disponible: Comunidades, canales y videollamadas' },
+        { channel: '🐛 Bugs', sender: 6, content: 'Encontré un bug en la notificación de mensajes grupales' },
+        { channel: '💡 Ideas', sender: 5, content: 'Sería genial tener reacciones con emoji en los mensajes' },
+        { channel: '💡 Ideas', sender: 7, content: '+1, y también stickers personalizados' },
+      ]
+    },
+    {
+      name: '🎮 Gamers MX',
+      description: 'Comunidad de gamers mexicanos',
+      is_public: 1,
+      created_by_idx: 6,
+      member_indices: [0, 2, 4],
+      channels: [
+        { name: 'General', type: 'text', default: true, sort: 0 },
+        { name: '📢 Eventos', type: 'announcement', default: false, sort: 1 },
+        { name: '💬 LFG', type: 'text', default: false, sort: 2 },
+        { name: '🎤 Chat de voz', type: 'voice', default: false, sort: 3 },
+      ],
+      messages: [
+        { channel: 'General', sender: 6, content: '¡Bienvenidos a Gamers MX! 🎮🔥' },
+        { channel: 'General', sender: 0, content: '¿Quién para ranked esta noche?' },
+        { channel: '💬 LFG', sender: 2, content: 'Busco squad para Valorant, rank inmortal+' },
+        { channel: '📢 Eventos', sender: 6, content: '📢 Torneo de Civis Gaming este sábado 8pm' },
+      ]
+    }
+  ];
+
+  const addCommunityMember = db.prepare('INSERT OR IGNORE INTO community_members (community_id, user_id, role) VALUES (?, ?, ?)');
+  const addChannelMember = db.prepare('INSERT OR IGNORE INTO channel_members (channel_id, user_id) VALUES (?, ?)');
+  const insertChannelMsg = db.prepare(`INSERT INTO channel_messages (id, channel_id, sender_id, content) VALUES (?, ?, ?, ?)`);
+
+  for (const com of communitiesData) {
+    const comId = uuidv4();
+    db.prepare(`
+      INSERT INTO communities (id, name, description, created_by, is_public)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(comId, com.name, com.description, users[com.created_by_idx].id, com.is_public);
+
+    addCommunityMember.run(comId, users[com.created_by_idx].id, 'owner');
+
+    const channelMap = {};
+    for (const ch of com.channels) {
+      const chId = uuidv4();
+      channelMap[ch.name] = chId;
+      db.prepare(`
+        INSERT INTO channels (id, community_id, name, description, channel_type, sort_order, is_default, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(chId, comId, ch.name, ch.description || null, ch.type, ch.sort, ch.default ? 1 : 0, users[com.created_by_idx].id);
+    }
+
+    for (const mIdx of com.member_indices) {
+      addCommunityMember.run(comId, users[mIdx].id, 'member');
+      for (const chId of Object.values(channelMap)) {
+        addChannelMember.run(chId, users[mIdx].id);
+      }
+    }
+
+    for (const msg of com.messages) {
+      const msgId = uuidv4();
+      insertChannelMsg.run(msgId, channelMap[msg.channel], users[msg.sender].id, msg.content);
     }
   }
-});
-seedContacts();
-console.log('Created contacts between all users.');
 
-// Create conversations and messages
-const insertConversation = db.prepare('INSERT INTO conversations (id, type, created_by, last_message, last_message_time) VALUES (?, ?, ?, ?, ?)');
-const insertParticipant = db.prepare('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)');
-const insertMessage = db.prepare('INSERT INTO messages (id, conversation_id, sender_id, receiver_id, content, message_type, read) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const comCount = db.prepare('SELECT COUNT(*) as count FROM communities').get().count;
+  const chCount = db.prepare('SELECT COUNT(*) as count FROM channels').get().count;
+  const chMsgCount = db.prepare('SELECT COUNT(*) as count FROM channel_messages').get().count;
+  console.log(`  ✅ ${comCount} comunidades, ${chCount} canales, ${chMsgCount} mensajes de canal`);
 
-const privateMessages = [
-  ['Hey, how are you?', 'I\'m great, thanks! How about you?', 'Doing well! Want to grab coffee later?'],
-  ['Did you see the game last night?', 'Yes! It was amazing!', 'The final play was incredible.'],
-  ['Happy birthday! 🎂', 'Thank you so much! 🎉', 'Let\'s celebrate this weekend!'],
-  ['Can you send me the report?', 'Sure, I\'ll email it right now.', 'Got it, thanks!'],
-  ['Are you coming to the meeting?', 'Yes, I\'ll be there at 3pm.', 'Perfect, see you there.'],
-  ['Check out this new restaurant!', 'Looks amazing, let\'s go Friday!', 'It\'s a date!']
-];
+  // =============================================
+  // CREAR ESTADOS/ESTORIES
+  // =============================================
+  console.log('📱 Creando estados...');
 
-const seedPrivateMessages = db.transaction(() => {
-  for (let i = 0; i < Math.min(6, createdUsers.length - 1); i++) {
-    const convId = uuidv4();
-    insertConversation.run(convId, 'private', createdUsers[i].id, privateMessages[i][2], datetime_now());
-    insertParticipant.run(convId, createdUsers[i].id);
-    insertParticipant.run(convId, createdUsers[i + 1].id);
+  const sampleStatuses = [
+    { user_idx: 0, content: '¡Trabajando en Civis! 🚀', background_color: '#1DA1F2' },
+    { user_idx: 1, content: 'Día de diseño ✨', background_color: '#E91E63' },
+    { user_idx: 3, content: 'Nueva foto espectacular 📸', background_color: '#4CAF50' },
+    { user_idx: 7, content: 'Nuevo arte digital 🎨', background_color: '#FF9800' },
+    { user_idx: 4, content: 'Receta del día: Tacos al pastor 🌮', background_color: '#F44336' },
+  ];
 
-    privateMessages[i].forEach((content, j) => {
-      const msgId = uuidv4();
-      const senderId = j % 2 === 0 ? createdUsers[i].id : createdUsers[i + 1].id;
-      const receiverId = j % 2 === 0 ? createdUsers[i + 1].id : createdUsers[i].id;
-      insertMessage.run(msgId, convId, senderId, receiverId, content, 'text', 1);
-    });
+  for (const status of sampleStatuses) {
+    const statusId = uuidv4();
+    db.prepare(`
+      INSERT INTO user_status (id, user_id, content_type, content, background_color, expires_at)
+      VALUES (?, ?, 'text', ?, ?, datetime('now', '+24 hours'))
+    `).run(statusId, users[status.user_idx].id, status.content, status.background_color);
   }
-});
 
-function datetime_now() {
-  return new Date().toISOString();
+  const statusCount = db.prepare('SELECT COUNT(*) as count FROM user_status').get().count;
+  console.log(`  ✅ ${statusCount} estados creados`);
+
+  // =============================================
+  // RESUMEN FINAL
+  // =============================================
+  console.log('\n' + '='.repeat(60));
+  console.log('🎉 Seed completado exitosamente');
+  console.log('='.repeat(60));
+  console.log('\n📊 RESUMEN DE DATOS:');
+  console.log(`  👥 Usuarios:       ${users.length}`);
+  console.log(`  🤝 Contactos:      ${contactCount}`);
+  console.log(`  💬 Conversaciones: ${convCount}`);
+  console.log(`  📨 Mensajes:       ${msgCount}`);
+  console.log(`  👥 Grupos:         ${groupCount}`);
+  console.log(`  📨 Mensajes grupo: ${groupMsgCount}`);
+  console.log(`  🏗️  Comunidades:    ${comCount}`);
+  console.log(`  📢 Canales:        ${chCount}`);
+  console.log(`  📨 Msg. canales:   ${chMsgCount}`);
+  console.log(`  📱 Estados:        ${statusCount}`);
+
+  console.log('\n🔑 CREDENCIALES DE PRUEBA (todas con contraseña: 123456):');
+  console.log('-'.repeat(60));
+  for (const user of users) {
+    console.log(`  📧 ${user.email}`);
+    console.log(`     👤 @${user.username} - ${user.display_name}`);
+    console.log(`     📱 ${user.phone}`);
+  }
+
+  console.log('\n🚀 ¡Servidor listo para probar!');
+  console.log('   Inicia el servidor con: npm run dev');
+  console.log('   Los endpoints están en: http://localhost:3001/api\n');
+
+  db.close();
 }
 
-seedPrivateMessages();
-console.log('Created private conversations and messages.');
-
-// Create 3 groups with all members
-const groups = [
-  { name: 'Familia Cívica', description: 'Family group for everyone' },
-  { name: 'Proyecto Alpha', description: 'Work project collaboration' },
-  { name: 'Amigos del Deporte', description: 'Sports fans group' }
-];
-
-const insertGroup = db.prepare('INSERT INTO groups (id, name, description, created_by) VALUES (?, ?, ?, ?)');
-const insertGroupMember = db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)');
-
-const seedGroups = db.transaction(() => {
-  groups.forEach((g, i) => {
-    const groupId = uuidv4();
-    insertGroup.run(groupId, g.name, g.description, createdUsers[i].id);
-    insertGroupMember.run(groupId, createdUsers[i].id, 'admin');
-
-    createdUsers.forEach((u, j) => {
-      if (j !== i) {
-        insertGroupMember.run(groupId, u.id, 'member');
-      }
-    });
-
-    // Create conversation for group
-    const convId = uuidv4();
-    insertConversation.run(convId, 'group', createdUsers[i].id, `${g.name} group created`, datetime_now());
-    createdUsers.forEach(u => {
-      insertParticipant.run(convId, u.id);
-    });
-
-    // Add some group messages
-    const groupMessages = [
-      'Welcome to ' + g.name + '!',
-      'Excited to be here!',
-      'This is going to be great!'
-    ];
-    groupMessages.forEach((content, j) => {
-      const msgId = uuidv4();
-      const sender = createdUsers[j % createdUsers.length];
-      insertMessage.run(msgId, convId, sender.id, null, content, 'text', 1);
-      // Update group_id on message
-      db.prepare('UPDATE messages SET group_id = ? WHERE id = ?').run(groupId, msgId);
-    });
-  });
+seed().catch(err => {
+  console.error('❌ Error en seed:', err);
+  process.exit(1);
 });
-seedGroups();
-console.log('Created 3 groups with members and messages.');
-
-// Create statuses for several users
-const statusData = [
-  { userId: 0, type: 'text', content: 'Having a great day! ☀️', background_color: '#FF5722' },
-  { userId: 1, type: 'text', content: 'New design coming soon 🎨', background_color: '#4CAF50' },
-  { userId: 2, type: 'text', content: 'Jamming tonight! 🎸', background_color: '#2196F3' },
-  { userId: 3, type: 'text', content: 'Reading a great book 📚', background_color: '#9C27B0' },
-  { userId: 5, type: 'text', content: 'Beautiful sunset today 🌅', background_color: '#FF9800' }
-];
-
-const insertStatus = db.prepare('INSERT INTO statuses (id, user_id, type, content, background_color, expires_at) VALUES (?, ?, ?, ?, ?, ?)');
-const seedStatuses = db.transaction(() => {
-  statusData.forEach(s => {
-    const id = uuidv4();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    insertStatus.run(id, createdUsers[s.userId].id, s.type, s.content, s.background_color, expiresAt);
-  });
-});
-seedStatuses();
-console.log('Created statuses for users.');
-
-// Create 2 communities with channels
-const communities = [
-  { name: 'Tech Enthusiasts', description: 'Technology discussion community' },
-  { name: 'Cooking Club', description: 'Share recipes and cooking tips' }
-];
-
-const insertCommunity = db.prepare('INSERT INTO communities (id, name, description, created_by) VALUES (?, ?, ?, ?)');
-const insertCommunityMember = db.prepare('INSERT INTO community_members (community_id, user_id, role) VALUES (?, ?, ?)');
-const insertChannel = db.prepare('INSERT INTO community_channels (id, community_id, name, description, type, created_by) VALUES (?, ?, ?, ?, ?, ?)');
-const insertChannelMessage = db.prepare('INSERT INTO channel_messages (id, channel_id, sender_id, content) VALUES (?, ?, ?, ?)');
-
-const seedCommunities = db.transaction(() => {
-  communities.forEach((c, i) => {
-    const communityId = uuidv4();
-    insertCommunity.run(communityId, c.name, c.description, createdUsers[i * 2].id);
-    insertCommunityMember.run(communityId, createdUsers[i * 2].id, 'owner');
-
-    // Add some members
-    createdUsers.forEach((u, j) => {
-      if (j !== i * 2) {
-        insertCommunityMember.run(communityId, u.id, 'member');
-      }
-    });
-
-    // Create channels
-    const channels = [
-      { name: 'general', description: 'General discussion', type: 'text' },
-      { name: 'announcements', description: 'Important announcements', type: 'announcement' }
-    ];
-
-    channels.forEach(ch => {
-      const channelId = uuidv4();
-      insertChannel.run(channelId, communityId, ch.name, ch.description, ch.type, createdUsers[i * 2].id);
-
-      // Add some messages
-      const messages = [
-        'Welcome to ' + ch.name + '!',
-        'Feel free to share your thoughts here.'
-      ];
-      messages.forEach((content, j) => {
-        const msgId = uuidv4();
-        insertChannelMessage.run(msgId, channelId, createdUsers[(i * 2 + j) % createdUsers.length].id, content);
-      });
-    });
-  });
-});
-seedCommunities();
-console.log('Created 2 communities with channels and messages.');
-
-console.log('\n✅ Database seeded successfully!');
-console.log(`Created:`);
-console.log(`  - ${createdUsers.length} users`);
-console.log(`  - ${createdUsers.length * (createdUsers.length - 1) / 2 * 2} contact relationships`);
-console.log(`  - 6 private conversations with messages`);
-console.log(`  - 3 groups with all members`);
-console.log(`  - 5 statuses`);
-console.log(`  - 2 communities with 2 channels each`);
-console.log(`\nTest accounts:`);
-createdUsers.forEach(u => {
-  console.log(`  ${u.email} / ${u.password} (${u.name})`);
-});
-
-db.close();
